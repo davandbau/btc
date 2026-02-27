@@ -347,19 +347,7 @@ def resolve_all():
             if m.get("closed"):
                 market = m
                 break
-        # Fallback: if market_end passed, use progressively lower price thresholds
-        if not market and now > end + timedelta(seconds=30):
-            secs_past = (now - end).total_seconds()
-            # Lower threshold the longer we wait: 0.85 at 30s, 0.75 at 60s, 0.65 at 90s+
-            threshold = max(0.65, 0.90 - secs_past / 200)
-            for m in event.get("markets", []):
-                try:
-                    p = json.loads(m.get("outcomePrices", "[]"))
-                    if p and (float(p[0]) > threshold or float(p[1]) > threshold):
-                        market = m
-                        break
-                except:
-                    pass
+        # No fallback — wait for market.closed == True (Polymarket on-chain settlement)
         if not market:
             continue
 
