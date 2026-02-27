@@ -401,9 +401,13 @@ function renderCards(data) {
 function renderOpenCards(positions) {
   const el = document.getElementById('openCards');
   const active = positions.filter(p => !isExpired(p.market_end));
-  if (!active.length) { el.innerHTML = '<div class="empty">No open positions</div>'; return; }
-  el.innerHTML = active.map(p => {
-    const curr = p._current_price != null ? pctStr(p._current_price) : '—';
+  const resolving = positions.filter(p => isExpired(p.market_end));
+  let html = '';
+  if (!active.length && !resolving.length) { el.innerHTML = '<div class="empty">No open positions</div>'; return; }
+  html += active.map(p => {
+    const targetBtc = p.strike_price ? '$' + Number(p.strike_price).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}) : '—';
+    const currentBtc = window._liveBtcPrice ? '$' + Number(window._liveBtcPrice).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}) : '—';
+    const btcColor = p.strike_price && window._liveBtcPrice ? (window._liveBtcPrice > p.strike_price ? 'var(--green)' : 'var(--red)') : '';
     const upnl = p._unrealized_pnl;
     const reason = p.reasoning || p.reason || '';
     return `<div class="trade-card open" onclick="this.querySelector('.tc-reason').classList.toggle('collapsed')">
@@ -412,8 +416,8 @@ function renderOpenCards(positions) {
         <span class="tc-pnl ${pnlCls(upnl)}">${pnlStr(upnl,true)}</span>
       </div>
       <div class="tc-meta">
-        <span>Entry ${pctStr(p.entry_price)}</span>
-        <span>Now ${curr}</span>
+        <span>Target ${targetBtc}</span>
+        <span style="color:${btcColor};font-variant-numeric:tabular-nums" class="live-btc-cell" data-strike="${p.strike_price||''}">Now ${currentBtc}</span>
         <span>$${(p.cost||0).toFixed(0)}</span>
         <span class="countdown" data-expires="${p.market_end||''}">${p.market_end ? timeUntil(p.market_end) : '—'}</span>
         <span>${shortTime(p.timestamp)}</span>
@@ -422,6 +426,21 @@ function renderOpenCards(positions) {
       ${reason ? `<div class="tc-reason collapsed">${reason}</div>` : ''}
     </div>`;
   }).join('');
+  html += resolving.map(p => {
+    const reason = p.reasoning || p.reason || '';
+    return `<div class="trade-card" style="border-left:3px solid #555;opacity:0.7" onclick="this.querySelector('.tc-reason').classList.toggle('collapsed')">
+      <div class="tc-header">
+        <span>${typeBadge(p._strategy)} <span class="tc-side ${sideCls(p.side)}">▶ ${p.side}</span></span>
+        <span><span class="spinner"></span> Resolving</span>
+      </div>
+      <div class="tc-meta">
+        <span>$${(p.cost||0).toFixed(0)}</span>
+        <span>${shortTime(p.timestamp)}</span>
+      </div>
+      ${reason ? `<div class="tc-reason collapsed">${reason}</div>` : ''}
+    </div>`;
+  }).join('');
+  el.innerHTML = html;
 }
 
 function renderClosedCards(trades) {
@@ -524,11 +543,14 @@ function applyData(data) {
     if (prev && data.btc_price > prev) el.style.color = 'var(--green)';
     else if (prev && data.btc_price < prev) el.style.color = 'var(--red)';
     else el.style.color = 'var(--fg)';
-    // Update Current ₿ cells in open positions table
+    // Update Current ₿ cells in both desktop table and mobile cards
     document.querySelectorAll('.live-btc-cell').forEach(cell => {
       const formatted = '$' + data.btc_price.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
-      cell.textContent = formatted;
-      const strike = parseFloat(cell.closest('tr')?.querySelector('td:nth-child(4)')?.textContent?.replace(/[,$]/g,''));
+      const isSpan = cell.tagName === 'SPAN';
+      cell.textContent = (isSpan ? 'Now ' : '') + formatted;
+      // Get strike from data attribute or table cell
+      let strike = parseFloat(cell.dataset.strike);
+      if (!strike) strike = parseFloat(cell.closest('tr')?.querySelector('td:nth-child(4)')?.textContent?.replace(/[,$]/g,''));
       if (strike) cell.style.color = data.btc_price > strike ? 'var(--green)' : 'var(--red)';
     });
   }
