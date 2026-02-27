@@ -386,28 +386,15 @@ def build_brief():
                         "down_token": tokens[down_idx] if tokens else "",
                     }
 
-                    # CLOB midpoint + orderbook for best bid/ask
+                    # CLOB orderbook for best bid/ask
                     for side_name, token_idx in [("up", up_idx), ("down", down_idx)]:
                         if tokens:
-                            mid = fetch_json(f"{CLOB_BASE}/midpoint?token_id={tokens[token_idx]}")
-                            if mid and mid.get("mid"):
-                                midpoint = float(mid["mid"])
-                                brief["polymarket"][f"{side_name}_mid"] = midpoint
-                            
                             clob = fetch_json(f"{CLOB_BASE}/book?token_id={tokens[token_idx]}")
                             if clob:
-                                bids = [b for b in clob.get("bids", []) if float(b["price"]) > 0.05]
-                                asks = [a for a in clob.get("asks", []) if float(a["price"]) < 0.95]
-                                best_bid = float(bids[0]["price"]) if bids else (midpoint * 0.95 if mid and mid.get("mid") else None)
-                                best_ask = float(asks[0]["price"]) if asks else (midpoint * 1.05 if mid and mid.get("mid") else None)
-                                if best_ask is None and mid and mid.get("mid"):
-                                    best_ask = float(mid["mid"])
-                                if best_bid is None and mid and mid.get("mid"):
-                                    best_bid = float(mid["mid"])
+                                best_bid = float(clob["bids"][0]["price"]) if clob.get("bids") else None
+                                best_ask = float(clob["asks"][0]["price"]) if clob.get("asks") else None
                                 brief["polymarket"][f"{side_name}_best_bid"] = best_bid
                                 brief["polymarket"][f"{side_name}_best_ask"] = best_ask
-                                brief["polymarket"][f"{side_name}_ask_depth"] = round(sum(float(a["size"]) for a in asks[:5]), 1) if asks else 0
-                                brief["polymarket"][f"{side_name}_bid_depth"] = round(sum(float(b["size"]) for b in bids[:5]), 1) if bids else 0
                 except:
                     pass
 
@@ -646,7 +633,7 @@ Be fast."""
     print(f"  [{ts}] 🧠 T{tranche_id} — triggering agent (base ${base_size:.0f}, {brief.get('remaining_s', '?')}s left)...")
 
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=45)
         output = result.stdout.strip() if result.stdout else ""
         decision = {"tranche": tranche_id, "action": "UNKNOWN", "reasoning": ""}
 

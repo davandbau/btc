@@ -388,32 +388,15 @@ def build_brief():
                         "down_token": tokens[down_idx] if tokens else "",
                     }
 
-                    # CLOB midpoint + orderbook for best bid/ask
+                    # CLOB orderbook for best bid/ask
                     for side_name, token_idx in [("up", up_idx), ("down", down_idx)]:
                         if tokens:
-                            # Use midpoint as the true market price
-                            mid = fetch_json(f"{CLOB_BASE}/midpoint?token_id={tokens[token_idx]}")
-                            if mid and mid.get("mid"):
-                                midpoint = float(mid["mid"])
-                                brief["polymarket"][f"{side_name}_mid"] = midpoint
-                            
-                            # Get orderbook for depth info, but find best TRADEABLE ask (skip 0.99 walls)
                             clob = fetch_json(f"{CLOB_BASE}/book?token_id={tokens[token_idx]}")
                             if clob:
-                                # Best bid: highest bid that's not a penny bid
-                                bids = [b for b in clob.get("bids", []) if float(b["price"]) > 0.05]
-                                asks = [a for a in clob.get("asks", []) if float(a["price"]) < 0.95]
-                                best_bid = float(bids[0]["price"]) if bids else (midpoint * 0.95 if mid and mid.get("mid") else None)
-                                best_ask = float(asks[0]["price"]) if asks else (midpoint * 1.05 if mid and mid.get("mid") else None)
-                                # If no real depth, fall back to midpoint
-                                if best_ask is None and mid and mid.get("mid"):
-                                    best_ask = float(mid["mid"])
-                                if best_bid is None and mid and mid.get("mid"):
-                                    best_bid = float(mid["mid"])
+                                best_bid = float(clob["bids"][0]["price"]) if clob.get("bids") else None
+                                best_ask = float(clob["asks"][0]["price"]) if clob.get("asks") else None
                                 brief["polymarket"][f"{side_name}_best_bid"] = best_bid
                                 brief["polymarket"][f"{side_name}_best_ask"] = best_ask
-                                brief["polymarket"][f"{side_name}_ask_depth"] = round(sum(float(a["size"]) for a in asks[:5]), 1) if asks else 0
-                                brief["polymarket"][f"{side_name}_bid_depth"] = round(sum(float(b["size"]) for b in bids[:5]), 1) if bids else 0
                 except:
                     pass
 
