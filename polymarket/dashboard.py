@@ -635,16 +635,25 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.end_headers()
             global _ledger_hash
             last_hash = ""
+            last_push = 0
             try:
                 while True:
+                    now = time.time()
                     current_hash = get_ledger_hash()
-                    if current_hash != last_hash:
+                    # Push on ledger change OR every 5s when positions are open (live price updates)
+                    ledger_changed = current_hash != last_hash
+                    timer_expired = now - last_push >= 5
+                    if ledger_changed or timer_expired:
                         data = build_api_response()
-                        msg = f"data: {json.dumps(data, default=str)}\n\n"
-                        self.wfile.write(msg.encode())
-                        self.wfile.flush()
-                        last_hash = current_hash
-                    time.sleep(5)
+                        has_open = len(data.get("open_positions", [])) > 0
+                        # Always push on ledger change; push on timer only if positions open
+                        if ledger_changed or has_open:
+                            msg = f"data: {json.dumps(data, default=str)}\n\n"
+                            self.wfile.write(msg.encode())
+                            self.wfile.flush()
+                            last_hash = current_hash
+                            last_push = now
+                    time.sleep(3)
             except (BrokenPipeError, ConnectionResetError):
                 pass
         else:
