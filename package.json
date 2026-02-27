@@ -1,0 +1,8 @@
+{
+  "dependencies": {
+    "@polymarket/clob-client": "^5.2.4",
+    "ethers": "^6.16.0",
+    "imapflow": "^1.2.10",
+    "nodemailer": "^8.0.1"
+  }
+}
