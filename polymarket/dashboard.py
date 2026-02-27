@@ -203,12 +203,15 @@ def build_api_response():
     all_open.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
     all_closed.sort(key=lambda x: x.get("resolved_at", x.get("timestamp", "")), reverse=True)
 
+    btc_price = get_chainlink_price()
+
     response = {
         "totals": {
             **{k: round(v, 2) for k, v in totals.items()},
             "unrealized_pnl": round(unrealized, 2),
             "total_pnl_incl_unrealized": round(totals["pnl"] + unrealized, 2),
         },
+        "btc_price": round(btc_price, 2) if btc_price else None,
         "open_positions": all_open,
         "active_count": len(active_open),
         "closed_trades": all_closed[-50:],
@@ -298,7 +301,7 @@ h2 { font-size: 15px; margin: 16px 0 8px; color: var(--muted); }
 <body>
 <div class="refresh-bar" id="refreshBar"></div>
 <h1>Polymarket Trading Desk</h1>
-<div class="subtitle"><span class="live-dot"></span>Live · <span id="liveClock"></span></div>
+<div class="subtitle"><span class="live-dot"></span>Live · <span id="liveClock"></span> · BTC <span id="btcPrice" style="font-weight:600;color:var(--fg)">—</span></div>
 
 <div class="cards" id="cards"></div>
 
@@ -490,6 +493,15 @@ function renderClosedTable(trades, openPositions) {
 
 let prevData = null;
 function applyData(data) {
+  // Always update BTC price
+  if (data.btc_price) {
+    const el = document.getElementById('btcPrice');
+    const prev = parseFloat(el.textContent.replace(/[,$]/g, '')) || 0;
+    el.textContent = '$' + data.btc_price.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+    if (prev && data.btc_price > prev) el.style.color = 'var(--green)';
+    else if (prev && data.btc_price < prev) el.style.color = 'var(--red)';
+    else el.style.color = 'var(--fg)';
+  }
   const t = data.totals;
   const p = prevData ? prevData.totals : t;
   const changed = !prevData ||
@@ -640,20 +652,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 while True:
                     now = time.time()
                     current_hash = get_ledger_hash()
-                    # Push on ledger change OR every 5s when positions are open (live price updates)
+                    # Always push every 3s (BTC price ticker + live P&L)
                     ledger_changed = current_hash != last_hash
-                    timer_expired = now - last_push >= 5
+                    timer_expired = now - last_push >= 3
                     if ledger_changed or timer_expired:
                         data = build_api_response()
-                        has_open = len(data.get("open_positions", [])) > 0
-                        # Always push on ledger change; push on timer only if positions open
-                        if ledger_changed or has_open:
-                            msg = f"data: {json.dumps(data, default=str)}\n\n"
-                            self.wfile.write(msg.encode())
-                            self.wfile.flush()
-                            last_hash = current_hash
-                            last_push = now
-                    time.sleep(3)
+                        msg = f"data: {json.dumps(data, default=str)}\n\n"
+                        self.wfile.write(msg.encode())
+                        self.wfile.flush()
+                        last_hash = current_hash
+                        last_push = now
+                    time.sleep(1)
             except (BrokenPipeError, ConnectionResetError):
                 pass
         else:
