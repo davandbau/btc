@@ -74,7 +74,7 @@ def get_client(creds):
             api_secret=creds["apiSecret"],
             api_passphrase=creds["apiPassphrase"],
         ),
-        signature_type=2,  # Polymarket proxy wallet
+        signature_type=1,  # Polymarket proxy wallet
         funder=creds["address"],
     )
 
