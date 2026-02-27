@@ -107,7 +107,7 @@ def build_api_response():
     global _last_resolve_time, _cached_response, _cache_time
 
     now = time.time()
-    if _cached_response and now - _cache_time < 3:
+    if _cached_response and now - _cache_time < 5:
         return _cached_response
 
     ledgers = get_all_ledgers()
@@ -704,9 +704,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 while True:
                     now = time.time()
                     current_hash = get_ledger_hash()
-                    # Always push every 3s (BTC price ticker + live P&L)
+                    # Always push every 5s (BTC price ticker + live P&L)
                     ledger_changed = current_hash != last_hash
-                    timer_expired = now - last_push >= 3
+                    timer_expired = now - last_push >= 5
                     if ledger_changed or timer_expired:
                         data = build_api_response()
                         msg = f"data: {json.dumps(data, default=str)}\n\n"
