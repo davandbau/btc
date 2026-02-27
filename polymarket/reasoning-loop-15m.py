@@ -3,7 +3,7 @@
 Polymarket 115-Min BTC Reasoning Loop — Single Tranche, Momentum-First.
 
 Watches 15-min BTC Up/Down windows, spawns OpenClaw sub-agent for trade decisions.
-Single tranche at 360s into window (6 min in, 9 min remaining), $30 base position.
+Three tranches: T1@360s (6min in), T2@540s (9min in), T3@660s (11min in).
 Pre-filters coin-flip deltas to reduce API calls.
 
 Usage:
@@ -37,7 +37,9 @@ MIN_EDGE = 0.05
 WINDOW_SECONDS = 900  # 15 minutes
 
 TRANCHES = [
-    {"id": 1, "trigger_elapsed": 360},
+    {"id": 1, "trigger_elapsed": 360},   # 6 min in, 9 min left
+    {"id": 2, "trigger_elapsed": 540},   # 9 min in, 6 min left
+    {"id": 3, "trigger_elapsed": 660},   # 11 min in, 4 min left
 ]
 
 def kelly_size(conviction, market_price):
@@ -696,7 +698,7 @@ def run_loop(dry_run=False):
     print(f"🧠 Polymarket 15-Min BTC Reasoning Loop — Tranched Entry")
     print(f"   {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}")
     print(f"   Mode: {'DRY RUN' if dry_run else 'PAPER TRADING'}")
-    print(f"   Single tranche: T1@360s — max ${MAX_POSITION:.0f}")
+    print(f"   Tranches: T1@360s T2@540s T3@660s — max ${MAX_POSITION:.0f}/each")
     print(f"   Sizing: Kelly Criterion (conviction 0-100%, min edge {MIN_EDGE*100:.0f}%)")
     print(f"{'='*65}\n")
 
