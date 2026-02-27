@@ -301,7 +301,7 @@ h2 { font-size: 15px; margin: 16px 0 8px; color: var(--muted); }
 <body>
 <div class="refresh-bar" id="refreshBar"></div>
 <h1>Polymarket Trading Desk</h1>
-<div class="subtitle"><span class="live-dot"></span>Live · <span id="liveClock"></span> · BTC <span id="btcPrice" style="font-weight:600;color:var(--fg)">—</span></div>
+<div class="subtitle"><span class="live-dot"></span>Live · <span id="liveClock" style="display:inline-block;min-width:90px;text-align:left;font-variant-numeric:tabular-nums"></span> · BTC <span id="btcPrice" style="display:inline-block;min-width:82px;text-align:left;font-weight:600;color:var(--fg);font-variant-numeric:tabular-nums">—</span></div>
 
 <div class="cards" id="cards"></div>
 
