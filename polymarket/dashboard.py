@@ -234,7 +234,7 @@ def build_api_response():
         "btc_price": round(btc_price, 2) if btc_price else None,
         "open_positions": all_open,
         "active_count": len(active_open),
-        "closed_trades": all_closed[-50:],
+        "closed_trades": all_closed,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -330,11 +330,51 @@ h2 { font-size: 15px; margin: 16px 0 8px; color: var(--muted); }
 <div class="desktop-only" id="openTable"></div>
 
 <h2>Closed Trades</h2>
+<div style="margin-bottom:8px">
+  <select id="typeFilter" onchange="applyFilter()" style="background:#1e1e1e;color:#ccc;border:1px solid #333;padding:4px 8px;border-radius:4px;font-size:13px">
+    <option value="all">All Types</option>
+    <option value="reasoning">5m</option>
+    <option value="reasoning-15m">15m</option>
+  </select>
+</div>
 <div class="mobile-only" id="closedCards"></div>
 <div class="desktop-only" id="closedTable"></div>
 
 <script>
 const REFRESH_MS = 5000;
+let _latestData = null;
+function getFilteredTrades() {
+  if (!_latestData) return [];
+  const f = document.getElementById('typeFilter').value;
+  if (f === 'all') return _latestData.closed_trades;
+  return _latestData.closed_trades.filter(t => t._strategy === f);
+}
+function computeTotalsFromTrades(trades) {
+  let pnl=0, wins=0, losses=0;
+  for (const t of trades) {
+    pnl += t.pnl || 0;
+    if (t.outcome === 'win') wins++;
+    else if (t.outcome === 'loss') losses++;
+  }
+  return {pnl, wins, losses, trades: wins+losses};
+}
+function applyFilter() {
+  if (!_latestData) return;
+  const filtered = getFilteredTrades();
+  renderClosedCards(filtered);
+  renderClosedTable(filtered, _latestData.open_positions);
+  const f = document.getElementById('typeFilter').value;
+  if (f === 'all') {
+    renderCards(_latestData);
+  } else {
+    const ft = computeTotalsFromTrades(filtered);
+    const openFiltered = _latestData.open_positions.filter(p => p._strategy === f);
+    const unrealized = openFiltered.reduce((s,p) => s + (p._unrealized_pnl||0), 0);
+    const openCost = openFiltered.reduce((s,p) => s + (p.cost||0), 0);
+    const activeCount = openFiltered.filter(p => { try { return !p.market_end || new Date(p.market_end) > new Date(); } catch(e) { return true; } }).length;
+    renderCards({totals: {pnl: ft.pnl, wins: ft.wins, losses: ft.losses, trades: ft.trades, unrealized_pnl: unrealized, total_pnl_incl_unrealized: ft.pnl + unrealized, open_cost: openCost, fees: 0}, active_count: activeCount});
+  }
+}
 const pnlCls = v => v > 0 ? 'green' : v < 0 ? 'red' : '';
 const pnlStr = (v, sign) => v == null ? '—' : (sign && v > 0 ? '+' : '') + '$' + v.toFixed(2);
 const pctStr = v => v == null ? '—' : (v * 100).toFixed(1) + '¢';
@@ -566,9 +606,10 @@ function applyData(data) {
   if (changed || !prevData) {
     renderCards(data);
     renderOpenCards(data.open_positions);
-    renderClosedCards(data.closed_trades);
+    _latestData = data;
+    renderClosedCards(getFilteredTrades());
     renderOpenTable(data.open_positions);
-    renderClosedTable(data.closed_trades, data.open_positions);
+    renderClosedTable(getFilteredTrades(), data.open_positions);
     if (prevData) {
       document.querySelectorAll('.card').forEach(el => {
         el.classList.add('flash');
