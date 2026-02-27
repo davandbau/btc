@@ -558,7 +558,7 @@ setInterval(() => {
 setInterval(() => {
   document.querySelectorAll('.countdown[data-expires]').forEach(el => {
     const ts = el.dataset.expires;
-    if (ts) { const v = timeUntil(ts); el.textContent = v.includes('Closed') ? v : '⏱ ' + v; }
+    if (ts) { el.textContent = timeUntil(ts); }
   });
 }, 1000);
 
