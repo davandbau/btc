@@ -106,26 +106,21 @@ def log_pass(brief, reason, pass_type="agent"):
 
 
 def get_chainlink_prices():
-    """Fetch latest Chainlink BTC/USD price."""
-    query = {
-        "query": '''
-        SELECT
-            report_blob_hex_timestamp AS t,
-            report_blob_median_price AS p
-        FROM report
-        WHERE feed_id = $1
-        ORDER BY t DESC
-        LIMIT 3
-        ''',
-        "params": [CHAINLINK_FEED_ID],
-    }
+    """Fetch latest Chainlink BTC/USD prices via live stream API."""
+    cl_url = f"{CHAINLINK_API}?query=LIVE_STREAM_REPORTS_QUERY&variables=%7B%22feedId%22%3A%22{CHAINLINK_FEED_ID}%22%7D"
     try:
-        req = Request(CHAINLINK_API, data=json.dumps(query).encode(),
-                      headers={"Content-Type": "application/json", "User-Agent": "reasoning-loop-15m-v2/1.0"})
+        req = Request(cl_url, headers={"User-Agent": "reasoning-loop-15m-v2/1.0"})
         with urlopen(req, timeout=8) as resp:
-            rows = json.loads(resp.read())
-        if rows:
-            return [{"price": int(r["p"]) / 1e8, "ts": r["t"]} for r in rows]
+            data = json.loads(resp.read())
+        if data and "data" in data:
+            nodes = data["data"].get("liveStreamReports", {}).get("nodes", [])
+            if nodes:
+                results = []
+                for n in nodes[:10]:
+                    ts = datetime.fromisoformat(n["validFromTimestamp"].replace("Z", "+00:00")).timestamp()
+                    price = float(n["price"]) / 1e18
+                    results.append({"price": price, "ts": ts})
+                return results
     except:
         pass
     return []
@@ -156,8 +151,7 @@ def quick_btc_check():
                     tokens = json.loads(m.get("clobTokenIds", "[]"))
                     # Strike = Chainlink price at window open (first report after window start)
                     for c in reversed(cl):
-                        ct = datetime.fromisoformat(c["ts"].replace("Z", "+00:00")).timestamp()
-                        if ct >= current_window:
+                        if c["ts"] >= current_window:
                             strike = c["price"]
                             break
                     if not strike:
@@ -362,8 +356,7 @@ def build_brief():
         brief["chainlink_current"] = round(cl[0]["price"], 2)
         # Strike = price at window open
         for c in reversed(cl):
-            ct = datetime.fromisoformat(c["ts"].replace("Z", "+00:00")).timestamp()
-            if ct >= current_window:
+            if c["ts"] >= current_window:
                 brief["strike"] = round(c["price"], 2)
                 break
         if "strike" not in brief:
