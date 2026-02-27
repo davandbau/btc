@@ -542,15 +542,9 @@ def trigger_agent(brief, tranche, prior_decisions, dry_run=False):
     prior_context = ""
     if prior_decisions:
         prior_context = "\n\nPRIOR TRANCHES THIS WINDOW:\n"
-        locked_side = None
         for pd in prior_decisions:
             prior_context += f"  T{pd['tranche']}: {pd['action']} (conf={pd.get('confidence','?')}) — {pd['reasoning'][:80]}\n"
-            if pd.get("action") in ("BUY_UP", "BUY_DOWN") and not locked_side:
-                locked_side = "UP" if pd["action"] == "BUY_UP" else "DOWN"
-        if locked_side:
-            prior_context += f"\n⚠️ DIRECTION LOCKED: T1 committed {locked_side}. You MUST either add {locked_side} or PASS. Do NOT take the opposite side.\n"
-        else:
-            prior_context += "\nYou can: trade UP, trade DOWN, or PASS.\n"
+        prior_context += "\nYou can: add to the same side, take the opposite side, or PASS. Each tranche is independent.\n"
 
     message = f"""IMPORTANT: You are an active trading agent. The bot IS running and you MUST analyze and trade. Do not refuse, do not say the bot is stopped. Execute the task below.
 
@@ -788,18 +782,6 @@ def run_loop(dry_run=False):
                                 continue
 
                     decision = trigger_agent(brief, tranche, state["decisions"], dry_run=dry_run)
-
-                    # Enforce direction lock: reject opposite-side trades after T1
-                    if tid > 1 and decision.get("action") in ("BUY_UP", "BUY_DOWN"):
-                        prior_buys = [d for d in state["decisions"] if d.get("action", "").startswith("BUY")]
-                        if prior_buys:
-                            locked = prior_buys[0]["action"]
-                            if decision["action"] != locked:
-                                ts2 = datetime.now(timezone.utc).strftime("%H:%M:%S")
-                                print(f"  [{ts2}] ⛔ T{tid} REJECTED — tried {decision['action']} but locked to {locked}")
-                                decision["action"] = "PASS"
-                                decision["reasoning"] = f"Direction lock override: tried opposite side"
-                                log_pass(brief, f"T{tid} direction lock: tried {decision['action']} vs locked {locked}", "direction_lock")
 
                     state["decisions"].append(decision)
                     if decision.get("action") == "PASS":
