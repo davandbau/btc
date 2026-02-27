@@ -395,7 +395,7 @@ function renderOpenCards(positions) {
         <span>Entry ${pctStr(p.entry_price)}</span>
         <span>Now ${curr}</span>
         <span>$${(p.cost||0).toFixed(0)}</span>
-        <span class="countdown" data-expires="${p.market_end||''}">⏱ ${p.market_end ? timeUntil(p.market_end) : '—'}</span>
+        <span class="countdown" data-expires="${p.market_end||''}">${p.market_end ? timeUntil(p.market_end) : '—'}</span>
         <span>${shortTime(p.timestamp)}</span>
         ${p.slug ? `<a href="https://polymarket.com/event/${p.slug}" target="_blank" style="color:var(--blue);text-decoration:none">↗</a>` : ''}
       </div>
