@@ -406,6 +406,92 @@ def build_brief():
                 except:
                     pass
 
+    # ---- HTF Bias (12h hourly candles) ----
+    htf_candles = fetch_json("https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1h&limit=12")
+    if htf_candles and len(htf_candles) >= 6:
+        try:
+            closes = [float(c[4]) for c in htf_candles]
+            highs = [float(c[2]) for c in htf_candles]
+            lows = [float(c[3]) for c in htf_candles]
+            opens = [float(c[1]) for c in htf_candles]
+            now_price = closes[-1]
+            score = 0.0
+
+            # 1. Price change 12h
+            chg_12h = (now_price - closes[0]) / closes[0] * 100
+            if chg_12h > 1: score += 1
+            elif chg_12h > 0.3: score += 0.5
+            elif chg_12h < -1: score -= 1
+            elif chg_12h < -0.3: score -= 0.5
+
+            # 2. Price change 4h (last 4 candles)
+            if len(closes) >= 4:
+                chg_4h = (now_price - closes[-4]) / closes[-4] * 100
+                if chg_4h > 0.5: score += 1
+                elif chg_4h > 0.15: score += 0.5
+                elif chg_4h < -0.5: score -= 1
+                elif chg_4h < -0.15: score -= 0.5
+
+            # 3. EMA cross (EMA-6 vs EMA-12)
+            def ema(data, period):
+                k = 2 / (period + 1)
+                val = data[0]
+                for d in data[1:]:
+                    val = d * k + val * (1 - k)
+                return val
+            ema6 = ema(closes, 6)
+            ema12 = ema(closes, 12)
+            ema_diff = (ema6 - ema12) / ema12 * 100
+            if ema_diff > 0.1: score += 1
+            elif ema_diff < -0.1: score -= 1
+
+            # 4. Candle ratio (green vs red)
+            green = sum(1 for o, c in zip(opens, closes) if c >= o)
+            red = len(closes) - green
+            if green >= 9: score += 1
+            elif green >= 7: score += 0.5
+            elif red >= 9: score -= 1
+            elif red >= 7: score -= 0.5
+
+            # 5. Structure — last 3 hourly closes
+            last3 = closes[-3:]
+            if last3[2] > last3[1] > last3[0]: score += 1
+            elif last3[2] > last3[1] or last3[1] > last3[0]: score += 0.5 if last3[2] > last3[0] else 0
+            if last3[2] < last3[1] < last3[0]: score -= 1
+            elif last3[2] < last3[1] or last3[1] < last3[0]: score -= 0.5 if last3[2] < last3[0] else 0
+
+            # 6. Range position — current price in 12h high-low range
+            h12_high = max(highs)
+            h12_low = min(lows)
+            if h12_high > h12_low:
+                range_pos = (now_price - h12_low) / (h12_high - h12_low)
+                if range_pos >= 0.8: score += 1
+                elif range_pos >= 0.6: score += 0.5
+                elif range_pos <= 0.2: score -= 1
+                elif range_pos <= 0.4: score -= 0.5
+            else:
+                range_pos = 0.5
+
+            # Label
+            if score >= 4: label = "strong_bullish"
+            elif score >= 2: label = "bullish"
+            elif score <= -4: label = "strong_bearish"
+            elif score <= -2: label = "bearish"
+            else: label = "neutral"
+
+            brief["htf_bias"] = {
+                "score": round(score, 1),
+                "label": label,
+                "12h_change_pct": round(chg_12h, 2),
+                "4h_change_pct": round(chg_4h, 2) if len(closes) >= 4 else None,
+                "ema6_vs_12": round(ema_diff, 3),
+                "green_candles": green,
+                "red_candles": red,
+                "range_position": round(range_pos, 2),
+            }
+        except Exception:
+            pass
+
     # Binance funding rate
     funding = fetch_json("https://fapi.binance.com/fapi/v1/premiumIndex?symbol=BTCUSDT")
     if funding:
@@ -600,9 +686,15 @@ ANALYZE (signals ranked by importance):
 4. **Orderbook imbalance** — score (-1 to +1). Should confirm delta direction. If imbalance contradicts delta, reduce confidence.
 5. **CVD + Taker flow** — net buying/selling pressure. Use to confirm, not contradict, the delta.
 6. **Technical indicators** — RSI, EMA, VWAP, Bollinger Bands. Use as tiebreakers, NOT as primary reversal signals. Ignore "overbought/oversold" as a reason to bet against delta — it doesn't work at 15-min scale.
-7. **Futures signals** — OI, basis, long/short ratio. Background context only.
-8. **Polymarket pricing** — is the ask price fair? Edge = true_prob - ask_price.
-9. **Risk/reward** — don't buy > 0.75 unless nearly certain.
+7. **htf_bias** — Higher timeframe trend (12h hourly candles), score -6 to +6.
+   - strong_bearish (≤-4): HEAVILY penalize UP trades. Reduce UP conviction by 20-30%. Short-term UP bounces get crushed by macro trend.
+   - bearish (-2 to -3): Penalize UP trades, reduce conviction by 10-15%.
+   - neutral (-1 to +1): No adjustment.
+   - bullish (+2 to +3): Penalize DOWN trades, reduce conviction by 10-15%.
+   - strong_bullish (≥+4): HEAVILY penalize DOWN trades. Reduce DOWN conviction by 20-30%.
+8. **Futures signals** — OI, basis, long/short ratio. Background context only.
+9. **Polymarket pricing** — is the ask price fair? Edge = true_prob - ask_price.
+10. **Risk/reward** — don't buy > 0.75 unless nearly certain.
 
 DO NOT use Hurst regime or RSI overbought/oversold as reasons to bet AGAINST the current delta. Our data proves this loses money.
 
