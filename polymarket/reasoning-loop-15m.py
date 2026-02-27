@@ -641,7 +641,7 @@ Be fast."""
     print(f"  [{ts}] 🧠 T{tranche_id} — triggering agent (base ${base_size:.0f}, {brief.get('remaining_s', '?')}s left)...")
 
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=45)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
         output = result.stdout.strip() if result.stdout else ""
         decision = {"tranche": tranche_id, "action": "UNKNOWN", "reasoning": ""}
 
