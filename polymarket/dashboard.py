@@ -168,7 +168,8 @@ def build_api_response():
         except Exception:
             pass
 
-    # Fetch live prices for open positions
+    # Fetch live BTC price and live token prices for open positions
+    btc_price = get_chainlink_price()
     live_prices = get_live_prices(all_open)
 
     # Enrich open positions with live prices and unrealized P&L
@@ -290,7 +291,7 @@ h1 { font-size: 20px; font-weight: 600; margin-bottom: 2px; }
 .type-5m { background: var(--purple); color: #000; }
 .type-15m { background: var(--blue); color: #000; }
 .resolving { opacity: 0.7; }
-.spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--muted); border-top-color: var(--blue); border-radius: 50%; animation: spin 0.8s linear infinite; }
+.spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid #555; border-top-color: #fff; border-radius: 50%; animation: spin 0.8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* Table (desktop) */
@@ -456,12 +457,13 @@ function renderOpenTable(positions) {
   for (const p of active) {
     const targetBtc = p.strike_price ? '$' + Number(p.strike_price).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}) : '—';
     const currentBtc = window._liveBtcPrice ? '$' + Number(window._liveBtcPrice).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}) : '—';
+    const btcColor = p.strike_price && window._liveBtcPrice ? (window._liveBtcPrice > p.strike_price ? 'var(--green)' : 'var(--red)') : '';
     h += `<tr>
       <td>${shortTime(p.timestamp)}</td>
       <td>${typeBadge(p._strategy)}</td>
       <td class="${sideCls(p.side) === 'up' ? 'green' : 'red'}">${p.side}</td>
       <td>${targetBtc}</td>
-      <td>${currentBtc}</td>
+      <td class="live-btc-cell" style="color:${btcColor};font-variant-numeric:tabular-nums">${currentBtc}</td>
       <td class="${pnlCls(p._unrealized_pnl)}">${pnlStr(p._unrealized_pnl,true)}</td>
       <td>$${(p.cost||0).toFixed(0)}</td>
       <td class="countdown" data-expires="${p.market_end||''}">${p.market_end ? timeUntil(p.market_end) : '—'}</td>
@@ -522,6 +524,13 @@ function applyData(data) {
     if (prev && data.btc_price > prev) el.style.color = 'var(--green)';
     else if (prev && data.btc_price < prev) el.style.color = 'var(--red)';
     else el.style.color = 'var(--fg)';
+    // Update Current ₿ cells in open positions table
+    document.querySelectorAll('.live-btc-cell').forEach(cell => {
+      const formatted = '$' + data.btc_price.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
+      cell.textContent = formatted;
+      const strike = parseFloat(cell.closest('tr')?.querySelector('td:nth-child(4)')?.textContent?.replace(/[,$]/g,''));
+      if (strike) cell.style.color = data.btc_price > strike ? 'var(--green)' : 'var(--red)';
+    });
   }
   const t = data.totals;
   const p = prevData ? prevData.totals : t;
