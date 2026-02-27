@@ -388,13 +388,21 @@ def build_brief():
                         "down_token": tokens[down_idx] if tokens else "",
                     }
 
-                    # CLOB orderbook for best bid/ask
+                    # CLOB midpoint + sorted orderbook for best bid/ask
                     for side_name, token_idx in [("up", up_idx), ("down", down_idx)]:
                         if tokens:
+                            # Midpoint (authoritative market price)
+                            mid = fetch_json(f"{CLOB_BASE}/midpoint?token_id={tokens[token_idx]}")
+                            if mid and mid.get("mid"):
+                                brief["polymarket"][f"{side_name}_mid"] = round(float(mid["mid"]), 4)
+
+                            # Orderbook — MUST sort before reading
                             clob = fetch_json(f"{CLOB_BASE}/book?token_id={tokens[token_idx]}")
                             if clob:
-                                best_bid = float(clob["bids"][0]["price"]) if clob.get("bids") else None
-                                best_ask = float(clob["asks"][0]["price"]) if clob.get("asks") else None
+                                bids_sorted = sorted(clob.get("bids", []), key=lambda x: float(x["price"]), reverse=True)
+                                asks_sorted = sorted(clob.get("asks", []), key=lambda x: float(x["price"]))
+                                best_bid = float(bids_sorted[0]["price"]) if bids_sorted else None
+                                best_ask = float(asks_sorted[0]["price"]) if asks_sorted else None
                                 brief["polymarket"][f"{side_name}_best_bid"] = best_bid
                                 brief["polymarket"][f"{side_name}_best_ask"] = best_ask
                 except:
@@ -563,7 +571,7 @@ MARKET BRIEF:
 RULES:
 - "Up" wins if Chainlink BTC/USD at window end >= strike. "Down" if < strike.
 - Shares pay $1 if correct, $0 if wrong.
-- Buy at best_ask for your side. Remaining: ~{brief.get('remaining_s', '?')}s.
+- Entry cost ≈ midpoint (up_mid / down_mid). Check best_ask for actual fill price. Remaining: ~{brief.get('remaining_s', '?')}s.
 - Position size scales with your confidence (see below).
 
 ⚠️ CRITICAL — MOMENTUM BEATS REVERSAL (from our own data):
@@ -675,7 +683,11 @@ Be fast."""
 
             # Log conviction and Kelly-sized position
             conv = decision.get("conviction", 50) / 100.0
-            entry_price = brief.get("polymarket", {}).get("up_price", 0.5) if decision.get("action") == "BUY_UP" else brief.get("polymarket", {}).get("down_price", 0.5)
+            pm = brief.get("polymarket", {})
+            if decision.get("action") == "BUY_UP":
+                entry_price = pm.get("up_mid", pm.get("up_best_ask", pm.get("up_price", 0.5)))
+            else:
+                entry_price = pm.get("down_mid", pm.get("down_best_ask", pm.get("down_price", 0.5)))
             sized = kelly_size(conv, entry_price)
             if decision["action"] not in ("PASS", "UNKNOWN"):
                 edge = conv - entry_price
