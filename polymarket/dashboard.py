@@ -174,14 +174,33 @@ def build_api_response():
     # Enrich open positions with live prices and unrealized P&L
     for pos in all_open:
         slug = pos.get("slug", "")
-        side = pos.get("side", "")
-        if slug in live_prices and side in live_prices[slug]:
-            current = live_prices[slug][side]
-            pos["_current_price"] = current
-            pos["_unrealized_pnl"] = (current - pos.get("entry_price", 0)) * pos.get("shares", 0)
+        side = pos.get("side", "Up")
+        entry = pos.get("entry_price", 0)
+        shares = pos.get("shares", 0)
+        cost = pos.get("cost", 0)
+        fee = pos.get("fee", 0)
+        strike = pos.get("strike_price", 0)
+
+        # Binary P&L based on current BTC vs strike
+        if btc_price and strike:
+            btc_above = btc_price > strike
+            winning = (side.lower() == "up" and btc_above) or (side.lower() == "down" and not btc_above)
+            if winning:
+                # Would pay out shares * $1, profit = shares - cost - fee
+                pos["_unrealized_pnl"] = round(shares - cost - fee, 2)
+            else:
+                # Would pay out $0, loss = -cost - fee
+                pos["_unrealized_pnl"] = round(-cost - fee, 2)
+            pos["_winning"] = winning
         else:
-            pos["_current_price"] = None
-            pos["_unrealized_pnl"] = None
+            # Fallback to token midpoint
+            if slug in live_prices and side in live_prices[slug]:
+                current = live_prices[slug][side]
+                pos["_current_price"] = current
+                pos["_unrealized_pnl"] = (current - entry) * shares
+            else:
+                pos["_current_price"] = None
+                pos["_unrealized_pnl"] = None
 
     # Split active vs resolving (expired but not yet resolved)
     now_utc = datetime.now(timezone.utc)
