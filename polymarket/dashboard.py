@@ -433,15 +433,16 @@ function renderOpenTable(positions) {
   const el = document.getElementById('openTable');
   const active = positions.filter(p => !isExpired(p.market_end));
   if (!active.length) { el.innerHTML = '<div class="empty">No open positions</div>'; return; }
-  let h = `<table><tr><th>Time</th><th>Type</th><th>Side</th><th>Entry</th><th>Current</th><th>P&L</th><th>Cost</th><th>Expires</th><th>Reasoning</th><th></th></tr>`;
+  let h = `<table><tr><th>Time</th><th>Type</th><th>Side</th><th>Target ₿</th><th>Current ₿</th><th>P&L</th><th>Cost</th><th>Expires</th><th>Reasoning</th><th></th></tr>`;
   for (const p of active) {
-    const curr = p._current_price != null ? pctStr(p._current_price) : '—';
+    const targetBtc = p.strike_price ? '$' + Number(p.strike_price).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}) : '—';
+    const currentBtc = window._liveBtcPrice ? '$' + Number(window._liveBtcPrice).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}) : '—';
     h += `<tr>
       <td>${shortTime(p.timestamp)}</td>
       <td>${typeBadge(p._strategy)}</td>
       <td class="${sideCls(p.side) === 'up' ? 'green' : 'red'}">${p.side}</td>
-      <td>${pctStr(p.entry_price)}</td>
-      <td>${curr}</td>
+      <td>${targetBtc}</td>
+      <td>${currentBtc}</td>
       <td class="${pnlCls(p._unrealized_pnl)}">${pnlStr(p._unrealized_pnl,true)}</td>
       <td>$${(p.cost||0).toFixed(0)}</td>
       <td class="countdown" data-expires="${p.market_end||''}">${p.market_end ? timeUntil(p.market_end) : '—'}</td>
@@ -494,6 +495,7 @@ function renderClosedTable(trades, openPositions) {
 let prevData = null;
 function applyData(data) {
   // Always update BTC price
+  if (data.btc_price) window._liveBtcPrice = data.btc_price;
   if (data.btc_price) {
     const el = document.getElementById('btcPrice');
     const prev = parseFloat(el.textContent.replace(/[,$]/g, '')) || 0;
