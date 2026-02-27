@@ -335,33 +335,57 @@ def resolve_all():
             end = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
         except:
             continue
-        if now < end + timedelta(seconds=30):
+        if now < end + timedelta(seconds=5):
             continue
 
+        # Try CLOB midpoint first (updates every ~1s, much faster than Gamma closed flag)
+        result = None
+        up_token = trade.get("token") if trade["side"].lower() == "up" else None
+        down_token = trade.get("token") if trade["side"].lower() == "down" else None
+
+        # We need both tokens — get from Gamma
         data = fetch_json(f"{GAMMA_BASE}/events?slug={trade['slug']}")
         if not data:
             continue
         event = data[0]
+
+        # Check Gamma closed flag first (authoritative)
         market = None
         for m in event.get("markets", []):
             if m.get("closed"):
                 market = m
                 break
-        # No fallback — wait for market.closed == True (Polymarket on-chain settlement)
-        if not market:
-            continue
 
-        try:
-            prices = json.loads(market.get("outcomePrices", "[]"))
-            outcomes = json.loads(market.get("outcomes", "[]"))
-        except:
-            continue
-        if not prices:
-            continue
-
-        up_idx = 0 if "Up" in outcomes[0] else 1
-        resolved_up = float(prices[up_idx]) > 0.9
-        result = "Up" if resolved_up else "Down"
+        if market:
+            # Gamma says closed — use its outcome prices (authoritative)
+            try:
+                prices = json.loads(market.get("outcomePrices", "[]"))
+                outcomes = json.loads(market.get("outcomes", "[]"))
+                up_idx = 0 if "Up" in outcomes[0] else 1
+                resolved_up = float(prices[up_idx]) > 0.9
+                result = "Up" if resolved_up else "Down"
+            except:
+                continue
+        else:
+            # Not closed yet — poll CLOB midpoint for fast resolution
+            for m in event.get("markets", []):
+                try:
+                    outcomes = json.loads(m.get("outcomes", "[]"))
+                    tokens = json.loads(m.get("clobTokenIds", "[]"))
+                    up_idx = 0 if "Up" in outcomes[0] else 1
+                    up_tok = tokens[up_idx]
+                    mid = fetch_json(f"{CLOB_BASE}/midpoint?token_id={up_tok}")
+                    if mid and mid.get("mid"):
+                        up_mid = float(mid["mid"])
+                        if up_mid > 0.95:
+                            result = "Up"
+                        elif up_mid < 0.05:
+                            result = "Down"
+                    break
+                except:
+                    pass
+            if not result:
+                continue
         won = trade["side"].lower() == result.lower()
 
         if won:
