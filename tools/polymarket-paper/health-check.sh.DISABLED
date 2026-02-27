@@ -1,0 +1,25 @@
+#!/bin/bash
+# Health check for Polymarket trading bot processes
+
+LOOP_RUNNING=$(pgrep -f reasoning-loop.py)
+DASH_RUNNING=$(pgrep -f "dashboard.py")
+TUNNEL_RUNNING=$(pgrep -f cloudflared)
+
+RESTART_LOG="/tmp/polymarket-health.log"
+
+if [ -z "$LOOP_RUNNING" ]; then
+    echo "$(date) — reasoning-loop dead, restarting" >> "$RESTART_LOG"
+    cd /Users/davidbaum/.openclaw/workspace/tools/polymarket-paper
+    PYTHONUNBUFFERED=1 python3 reasoning-loop.py >> /tmp/reasoning-loop.log 2>&1 &
+fi
+
+if [ -z "$DASH_RUNNING" ]; then
+    echo "$(date) — dashboard dead, restarting" >> "$RESTART_LOG"
+    cd /Users/davidbaum/.openclaw/workspace/tools/polymarket-paper
+    PYTHONUNBUFFERED=1 python3 dashboard.py >> /tmp/dashboard.log 2>&1 &
+fi
+
+if [ -z "$TUNNEL_RUNNING" ]; then
+    echo "$(date) — cloudflared dead, restarting" >> "$RESTART_LOG"
+    cloudflared tunnel --url http://localhost:8850 >> /tmp/cloudflared.log 2>&1 &
+fi

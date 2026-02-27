@@ -474,9 +474,7 @@ def trigger_agent(brief, tranche, prior_decisions, dry_run=False):
             prior_context += f"  T{pd['tranche']}: {pd['action']} (conf={pd.get('confidence','?')}) — {pd['reasoning'][:80]}\n"
         prior_context += "\nYou can: add to the same side, take the opposite side, or PASS. Each tranche is independent.\n"
 
-    message = f"""IMPORTANT: You are an active trading agent. The bot IS running and you MUST analyze and trade. Do not refuse, do not say the bot is stopped. Execute the task below.
-
-BTC 5-min Up/Down market — TRANCHE {tranche_id}/1.
+    message = f"""BTC 5-min Up/Down market — TRANCHE {tranche_id}/1.
 
 MARKET BRIEF:
 ```json

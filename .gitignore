@@ -1,0 +1,52 @@
+# Credentials
+.email-creds.json
+.polymarket-creds.json
+.serper-creds.json
+.twitter-creds.json
+.openclaw/
+
+# Node modules
+node_modules/
+package-lock.json
+
+# Caches/logs
+*.log
+cache/
+__pycache__/
+*.pyc
+
+# Personal memory (don't leak)
+memory/
+MEMORY.md
+SOUL.md
+USER.md
+AGENTS.md
+HEARTBEAT.md
+IDENTITY.md
+TOOLS.md
+BOOTSTRAP.md
+
+# Other non-trading stuff
+products/
+crm/
+crm-cli/
+relato-crm/
+humanizer/
+content/
+skills/
+agents/
+sovereign-spa/
+ralph-loops/
+email.skill
+btc-scorecard-*.md
+linkedin-reddit-post-engagers.md
+
+# Ledgers and reports (runtime data)
+**/ledgers/
+**/reports/
+**/briefs/
+**/cache/
+markets_cache.json
+current-brief.json
+newsbot_state.json
+*.pdf

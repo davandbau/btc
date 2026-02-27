@@ -6,7 +6,7 @@ Serves a live dashboard at http://localhost:8850 that auto-refreshes
 with data from all strategy ledgers.
 
 Usage:
-    python3 dashboard.py              # start on port 8850
+    python3 dashboard.py              # start on port 8851
     python3 dashboard.py --port 9000  # custom port
 """
 
@@ -59,29 +59,27 @@ def get_chainlink_price():
 
 
 def get_live_prices(positions):
-    """Get live prices from Polymarket CLOB orderbook (best bid = what you'd sell at)."""
+    """Get live prices from CLOB midpoint endpoint (same source as Polymarket UI)."""
     prices = {}
     for pos in positions:
         slug = pos.get("slug", "")
         token = pos.get("token", "")
         if not slug or slug in prices:
             continue
+        
+        side = pos.get("side", "Up")
+        
         if token:
-            book = fetch_json(f"{CLOB_BASE}/book?token_id={token}", timeout=5)
-            if book and book.get("bids"):
-                best_bid = float(book["bids"][0]["price"])
-                side = pos.get("side", "Up")
-                prices[slug] = {side: best_bid, ("Down" if side == "Up" else "Up"): round(1 - best_bid, 3)}
-                continue
-        data = fetch_json(f"{GAMMA_BASE}/markets?slug={slug}")
-        if data and len(data) > 0:
-            m = data[0]
-            try:
-                p = json.loads(m.get("outcomePrices", "[]"))
-                o = json.loads(m.get("outcomes", "[]"))
-                prices[slug] = dict(zip(o, [float(x) for x in p]))
-            except:
-                pass
+            mid = fetch_json(f"{CLOB_BASE}/midpoint?token_id={token}", timeout=5)
+            if mid and mid.get("mid"):
+                midpoint = float(mid["mid"])
+                price_map = {}
+                for case in [side, side.upper(), side.lower(), side.capitalize()]:
+                    price_map[case] = midpoint
+                other = "Down" if side.capitalize() == "Up" else "Up"
+                for case in [other, other.upper(), other.lower()]:
+                    price_map[case] = round(1 - midpoint, 3)
+                prices[slug] = price_map
     return prices
 
 
@@ -109,7 +107,7 @@ def build_api_response():
     global _last_resolve_time, _cached_response, _cache_time
 
     now = time.time()
-    if _cached_response and now - _cache_time < 5:
+    if _cached_response and now - _cache_time < 3:
         return _cached_response
 
     ledgers = get_all_ledgers()
@@ -147,6 +145,8 @@ def build_api_response():
         try:
             subprocess.run(["python3", str(BOT_DIR / "reasoning-trader.py"), "--resolve"],
                           capture_output=True, text=True, timeout=10)
+            subprocess.run(["python3", str(BOT_DIR / "reasoning-trader-15m.py"), "--resolve"],
+                          capture_output=True, text=True, timeout=10)
             # Reload after resolution
             ledgers = get_all_ledgers()
             all_open = []
@@ -183,13 +183,25 @@ def build_api_response():
             pos["_current_price"] = None
             pos["_unrealized_pnl"] = None
 
-    totals["open_cost"] = sum(p.get("cost", 0) for p in all_open)
+    # Split active vs resolving (expired but not yet resolved)
+    now_utc = datetime.now(timezone.utc)
+    active_open = []
+    for p in all_open:
+        me = p.get("market_end")
+        if me:
+            try:
+                if datetime.fromisoformat(me.replace("Z", "+00:00")) < now_utc:
+                    continue
+            except:
+                pass
+        active_open.append(p)
+
+    totals["open_cost"] = sum(p.get("cost", 0) for p in active_open)
+    unrealized = sum(p.get("_unrealized_pnl", 0) or 0 for p in active_open)
 
     # Sort
     all_open.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
     all_closed.sort(key=lambda x: x.get("resolved_at", x.get("timestamp", "")), reverse=True)
-
-    unrealized = sum(p.get("_unrealized_pnl", 0) or 0 for p in all_open)
 
     response = {
         "totals": {
@@ -198,6 +210,7 @@ def build_api_response():
             "total_pnl_incl_unrealized": round(totals["pnl"] + unrealized, 2),
         },
         "open_positions": all_open,
+        "active_count": len(active_open),
         "closed_trades": all_closed[-50:],
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
@@ -250,6 +263,13 @@ h1 { font-size: 20px; font-weight: 600; margin-bottom: 2px; }
 .tc-pnl { font-weight: 600; }
 .tc-strat { font-size: 10px; padding: 2px 6px; border-radius: 4px; }
 .strat-reasoning { background: var(--purple); color: #000; }
+.strat-reasoning-15m { background: var(--blue); color: #000; }
+.tc-type { font-size: 10px; padding: 2px 6px; border-radius: 4px; font-weight: 600; }
+.type-5m { background: var(--purple); color: #000; }
+.type-15m { background: var(--blue); color: #000; }
+.resolving { opacity: 0.7; }
+.spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--muted); border-top-color: var(--blue); border-radius: 50%; animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 
 /* Table (desktop) */
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -291,12 +311,18 @@ h2 { font-size: 15px; margin: 16px 0 8px; color: var(--muted); }
 <div class="desktop-only" id="closedTable"></div>
 
 <script>
-const REFRESH_MS = 10000;
+const REFRESH_MS = 5000;
 const pnlCls = v => v > 0 ? 'green' : v < 0 ? 'red' : '';
 const pnlStr = (v, sign) => v == null ? '—' : (sign && v > 0 ? '+' : '') + '$' + v.toFixed(2);
 const pctStr = v => v == null ? '—' : (v * 100).toFixed(1) + '¢';
 const sideCls = s => (s||'').toLowerCase() === 'up' ? 'up' : 'down';
 const stratBadge = s => `<span class="tc-strat strat-${s}">${s}</span>`;
+const typeBadge = s => {
+  const is15 = (s||'').includes('15m');
+  return `<span class="tc-type ${is15 ? 'type-15m' : 'type-5m'}">${is15 ? '15m' : '5m'}</span>`;
+};
+const isExpired = ts => { if (!ts) return false; const t = new Date(ts.replace('+00:00','Z')).getTime(); return !isNaN(t) && t < Date.now(); };
+const resolvingBadge = '<span class="spinner"></span> Resolving';
 
 function timeAgo(ts) {
   if (!ts) return '—';
@@ -338,7 +364,7 @@ function renderCards(data) {
     </div>
     <div class="card">
       <div class="card-label">Open</div>
-      <div class="card-value yellow">${data.open_positions.length}</div>
+      <div class="card-value yellow">${data.active_count}</div>
       <div class="card-sub">$${t.open_cost.toFixed(0)} deployed</div>
     </div>
     <div class="card">
@@ -351,14 +377,15 @@ function renderCards(data) {
 
 function renderOpenCards(positions) {
   const el = document.getElementById('openCards');
-  if (!positions.length) { el.innerHTML = '<div class="empty">No open positions</div>'; return; }
-  el.innerHTML = positions.map(p => {
+  const active = positions.filter(p => !isExpired(p.market_end));
+  if (!active.length) { el.innerHTML = '<div class="empty">No open positions</div>'; return; }
+  el.innerHTML = active.map(p => {
     const curr = p._current_price != null ? pctStr(p._current_price) : '—';
     const upnl = p._unrealized_pnl;
     const reason = p.reasoning || p.reason || '';
     return `<div class="trade-card open" onclick="this.querySelector('.tc-reason').classList.toggle('collapsed')">
       <div class="tc-header">
-        <span><span class="tc-side ${sideCls(p.side)}">▶ ${p.side}</span> · ${stratBadge(p._strategy)}</span>
+        <span>${typeBadge(p._strategy)} <span class="tc-side ${sideCls(p.side)}">▶ ${p.side}</span></span>
         <span class="tc-pnl ${pnlCls(upnl)}">${pnlStr(upnl,true)}</span>
       </div>
       <div class="tc-meta">
@@ -401,13 +428,14 @@ function renderClosedCards(trades) {
 
 function renderOpenTable(positions) {
   const el = document.getElementById('openTable');
-  if (!positions.length) { el.innerHTML = '<div class="empty">No open positions</div>'; return; }
-  let h = `<table><tr><th>Time</th><th>Strategy</th><th>Side</th><th>Entry</th><th>Current</th><th>P&L</th><th>Cost</th><th>Expires</th><th>Reasoning</th><th></th></tr>`;
-  for (const p of positions) {
+  const active = positions.filter(p => !isExpired(p.market_end));
+  if (!active.length) { el.innerHTML = '<div class="empty">No open positions</div>'; return; }
+  let h = `<table><tr><th>Time</th><th>Type</th><th>Side</th><th>Entry</th><th>Current</th><th>P&L</th><th>Cost</th><th>Expires</th><th>Reasoning</th><th></th></tr>`;
+  for (const p of active) {
     const curr = p._current_price != null ? pctStr(p._current_price) : '—';
     h += `<tr>
       <td>${shortTime(p.timestamp)}</td>
-      <td>${stratBadge(p._strategy)}</td>
+      <td>${typeBadge(p._strategy)}</td>
       <td class="${sideCls(p.side) === 'up' ? 'green' : 'red'}">${p.side}</td>
       <td>${pctStr(p.entry_price)}</td>
       <td>${curr}</td>
@@ -421,15 +449,32 @@ function renderOpenTable(positions) {
   el.innerHTML = h + '</table>';
 }
 
-function renderClosedTable(trades) {
+function renderClosedTable(trades, openPositions) {
   const el = document.getElementById('closedTable');
-  if (!trades.length) { el.innerHTML = '<div class="empty">No closed trades yet</div>'; return; }
-  let h = `<table><tr><th>Time</th><th>Strategy</th><th>Side</th><th>Entry</th><th>Result</th><th>P&L</th><th>Cost</th><th>Closed</th><th>Reasoning</th><th></th></tr>`;
+  // Resolving = expired but not yet resolved (still in open_positions)
+  const resolving = (openPositions||[]).filter(p => isExpired(p.market_end));
+  if (!trades.length && !resolving.length) { el.innerHTML = '<div class="empty">No closed trades yet</div>'; return; }
+  let h = `<table><tr><th>Time</th><th>Type</th><th>Side</th><th>Entry</th><th>Result</th><th>P&L</th><th>Cost</th><th>Closed</th><th>Reasoning</th><th></th></tr>`;
+  // Show resolving positions first
+  for (const p of resolving) {
+    h += `<tr class="resolving">
+      <td>${shortTime(p.timestamp)}</td>
+      <td>${typeBadge(p._strategy)}</td>
+      <td class="${sideCls(p.side) === 'up' ? 'green' : 'red'}">${p.side}</td>
+      <td>${pctStr(p.entry_price)}</td>
+      <td>${resolvingBadge}</td>
+      <td>—</td>
+      <td>$${(p.cost||0).toFixed(0)}</td>
+      <td>—</td>
+      <td class="reason-cell">${(p.reasoning||p.reason||'').substring(0,80)}</td>
+      <td>${p.slug ? `<a href="https://polymarket.com/event/${p.slug}" target="_blank" style="color:var(--blue)">↗</a>` : ''}</td>
+    </tr>`;
+  }
   for (const t of trades) {
     const icon = t.outcome === 'win' ? '<span style="color:#4caf50">●</span>' : '<span style="color:#f44336">●</span>';
     h += `<tr>
       <td>${shortTime(t.timestamp)}</td>
-      <td>${stratBadge(t._strategy)}</td>
+      <td>${typeBadge(t._strategy)}</td>
       <td class="${sideCls(t.side) === 'up' ? 'green' : 'red'}">${t.side}</td>
       <td>${pctStr(t.entry_price)}</td>
       <td>${icon} ${t.market_result||'—'}</td>
@@ -459,7 +504,7 @@ function applyData(data) {
     renderOpenCards(data.open_positions);
     renderClosedCards(data.closed_trades);
     renderOpenTable(data.open_positions);
-    renderClosedTable(data.closed_trades);
+    renderClosedTable(data.closed_trades, data.open_positions);
     if (prevData) {
       document.querySelectorAll('.card').forEach(el => {
         el.classList.add('flash');

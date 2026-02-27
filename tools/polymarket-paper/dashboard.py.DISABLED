@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Polymarket Trading Desk — Real-time web UI.
+Polymarket Paper Trading Dashboard — Real-time web UI.
 
 Serves a live dashboard at http://localhost:8850 that auto-refreshes
-with data from all strategy ledgers.
+every 30 seconds with data from all strategy ledgers + Kalshi cross-refs.
 
 Usage:
     python3 dashboard.py              # start on port 8850
@@ -11,16 +11,12 @@ Usage:
 """
 
 import argparse
-import base64
 import json
-import math
 import os
-import subprocess
 import sys
 import time
 from datetime import datetime, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from socketserver import ThreadingMixIn
 from pathlib import Path
 from urllib.request import urlopen, Request
 from urllib.error import URLError
@@ -28,11 +24,6 @@ from urllib.error import URLError
 BOT_DIR = Path(__file__).parent
 LEDGER_DIR = BOT_DIR / "ledgers"
 GAMMA_BASE = "https://gamma-api.polymarket.com"
-CLOB_BASE = "https://clob.polymarket.com"
-CHAINLINK_FEED = "0x00039d9e45394f473ab1f050a1b963e6b05351e52d71e507509ada0c95ed75b8"
-
-DASH_USER = "david"
-DASH_PASS = "polymarket2026"
 
 
 def fetch_json(url, timeout=8):
@@ -42,47 +33,6 @@ def fetch_json(url, timeout=8):
             return json.loads(resp.read())
     except:
         return None
-
-
-def get_chainlink_price():
-    """Fetch current BTC/USD from Chainlink."""
-    try:
-        url = f"https://data.chain.link/api/query-timescale?query=LIVE_STREAM_REPORTS_QUERY&variables=%7B%22feedId%22%3A%22{CHAINLINK_FEED}%22%7D"
-        data = fetch_json(url, timeout=5)
-        if data and "data" in data:
-            nodes = data["data"].get("liveStreamReports", {}).get("nodes", [])
-            if nodes:
-                return float(nodes[0]["price"]) / 1e18
-    except:
-        pass
-    return None
-
-
-def get_live_prices(positions):
-    """Get live prices from Polymarket CLOB orderbook (best bid = what you'd sell at)."""
-    prices = {}
-    for pos in positions:
-        slug = pos.get("slug", "")
-        token = pos.get("token", "")
-        if not slug or slug in prices:
-            continue
-        if token:
-            book = fetch_json(f"{CLOB_BASE}/book?token_id={token}", timeout=5)
-            if book and book.get("bids"):
-                best_bid = float(book["bids"][0]["price"])
-                side = pos.get("side", "Up")
-                prices[slug] = {side: best_bid, ("Down" if side == "Up" else "Up"): round(1 - best_bid, 3)}
-                continue
-        data = fetch_json(f"{GAMMA_BASE}/markets?slug={slug}")
-        if data and len(data) > 0:
-            m = data[0]
-            try:
-                p = json.loads(m.get("outcomePrices", "[]"))
-                o = json.loads(m.get("outcomes", "[]"))
-                prices[slug] = dict(zip(o, [float(x) for x in p]))
-            except:
-                pass
-    return prices
 
 
 def get_all_ledgers():
@@ -100,30 +50,146 @@ def get_all_ledgers():
     return ledgers
 
 
-# Cache for API response
+CHAINLINK_FEED = "0x00039d9e45394f473ab1f050a1b963e6b05351e52d71e507509ada0c95ed75b8"
+
+def get_chainlink_price():
+    """Fetch current BTC/USD from Chainlink."""
+    try:
+        url = f"https://data.chain.link/api/query-timescale?query=LIVE_STREAM_REPORTS_QUERY&variables=%7B%22feedId%22%3A%22{CHAINLINK_FEED}%22%7D"
+        data = fetch_json(url, timeout=5)
+        if data and "data" in data:
+            nodes = data["data"].get("liveStreamReports", {}).get("nodes", [])
+            if nodes:
+                # Price is in wei-like format, divide by 1e18
+                return float(nodes[0]["price"]) / 1e18
+    except:
+        pass
+    return None
+
+
+def get_live_prices(positions):
+    """Get live prices from Polymarket CLOB orderbook (best bid = what you'd sell at)."""
+    prices = {}
+    for pos in positions:
+        slug = pos.get("slug", "")
+        token = pos.get("token", "")
+        if not slug or slug in prices:
+            continue
+        # Try CLOB orderbook for real-time price
+        if token:
+            book = fetch_json(f"https://clob.polymarket.com/book?token_id={token}", timeout=5)
+            if book and book.get("bids"):
+                best_bid = float(book["bids"][0]["price"])
+                side = pos.get("side", "Up")
+                prices[slug] = {side: best_bid, ("Down" if side == "Up" else "Up"): round(1 - best_bid, 3)}
+                continue
+        # Fallback: Gamma API mid prices
+        data = fetch_json(f"{GAMMA_BASE}/markets?slug={slug}")
+        if data and len(data) > 0:
+            m = data[0]
+            try:
+                p = json.loads(m.get("outcomePrices", "[]"))
+                o = json.loads(m.get("outcomes", "[]"))
+                prices[slug] = dict(zip(o, [float(x) for x in p]))
+            except:
+                pass
+    return prices
+
+
+def resolve_expired_positions(ledger, name):
+    """Check open positions for resolution via Polymarket API. Mutates ledger in place."""
+    now = datetime.now(timezone.utc)
+    resolved_any = False
+
+    for pos in list(ledger.get("open_positions", [])):
+        if pos.get("resolved"):
+            continue
+
+        # Check if market has closed
+        slug = pos.get("slug", "")
+        if not slug:
+            continue
+
+        data = fetch_json(f"{GAMMA_BASE}/markets?slug={slug}")
+        if not data or not data[0].get("closed"):
+            continue
+
+        market = data[0]
+        try:
+            prices = json.loads(market.get("outcomePrices", "[]"))
+            outcomes = json.loads(market.get("outcomes", "[]"))
+        except:
+            continue
+
+        if not prices or not outcomes:
+            continue
+
+        winning_idx = max(range(len(prices)), key=lambda i: float(prices[i]))
+        winning_outcome = outcomes[winning_idx] if winning_idx < len(outcomes) else "?"
+        won = pos.get("side") == winning_outcome
+
+        if won:
+            pnl = (1.0 - pos["entry_price"]) * pos["shares"] - pos.get("fee", 0)
+        else:
+            pnl = -(pos["entry_price"] * pos["shares"] + pos.get("fee", 0))
+
+        pos["resolved"] = True
+        pos["outcome"] = "win" if won else "loss"
+        pos["pnl"] = round(pnl, 4)
+        pos["resolved_at"] = now.isoformat()
+        pos["market_result"] = winning_outcome
+
+        ledger["stats"]["total_pnl"] = ledger["stats"].get("total_pnl", 0) + pnl
+        ledger["stats"]["total_trades"] = ledger["stats"].get("total_trades", 0) + 1
+        ledger["stats"]["total_fees"] = ledger["stats"].get("total_fees", 0) + pos.get("fee", 0)
+        if won:
+            ledger["stats"]["wins"] = ledger["stats"].get("wins", 0) + 1
+        else:
+            ledger["stats"]["losses"] = ledger["stats"].get("losses", 0) + 1
+
+        ledger.setdefault("trades", []).append(pos)
+        resolved_any = True
+
+    if resolved_any:
+        ledger["open_positions"] = [p for p in ledger["open_positions"] if not p.get("resolved")]
+        # Save back to disk
+        LEDGER_DIR.mkdir(exist_ok=True)
+        (LEDGER_DIR / f"{name}.json").write_text(json.dumps(ledger, indent=2))
+
+    return resolved_any
+
+
 _last_resolve_time = 0
 _cached_response = None
-_cache_time = 0
 
 def build_api_response():
-    global _last_resolve_time, _cached_response, _cache_time
-
-    now = time.time()
-    if _cached_response and now - _cache_time < 5:
-        return _cached_response
+    """Build the full dashboard data payload."""
+    global _last_resolve_time, _cached_response
 
     ledgers = get_all_ledgers()
+
+    # Only resolve positions once per 60 seconds to keep page loads fast
+    now = time.time()
+    if now - _last_resolve_time > 60:
+        for name, ledger in ledgers.items():
+            resolve_expired_positions(ledger, name)
+        _last_resolve_time = now
+
     all_open = []
     all_closed = []
     totals = {"pnl": 0, "wins": 0, "losses": 0, "trades": 0, "fees": 0, "open_cost": 0}
 
     for name, ledger in ledgers.items():
+        strat = ledger.get("strategy", name)
         for pos in ledger.get("open_positions", []):
-            pos["_strategy"] = name
+            pos["_strategy"] = strat
             all_open.append(pos)
+            totals["open_cost"] += pos.get("cost", 0)
+
         for trade in ledger.get("trades", []):
-            trade["_strategy"] = name
+            trade["_strategy"] = strat
             all_closed.append(trade)
+
         stats = ledger.get("stats", {})
         totals["pnl"] += stats.get("total_pnl", 0)
         totals["wins"] += stats.get("wins", 0)
@@ -132,22 +198,13 @@ def build_api_response():
         totals["fees"] += stats.get("total_fees", 0)
 
     # Resolve expired positions via reasoning-trader (uses events API, more reliable)
-    has_expired = False
-    for p in all_open:
-        me = p.get("market_end")
-        if me:
-            try:
-                if datetime.fromisoformat(me) < datetime.now(timezone.utc):
-                    has_expired = True
-                    break
-            except:
-                pass
-    if has_expired and now - _last_resolve_time > 10:
-        _last_resolve_time = now
+    if any(p.get("market_end") and datetime.fromisoformat(p["market_end"]) < datetime.now(timezone.utc)
+           for p in all_open):
+        import subprocess
         try:
             subprocess.run(["python3", str(BOT_DIR / "reasoning-trader.py"), "--resolve"],
                           capture_output=True, text=True, timeout=10)
-            # Reload after resolution
+            # Reload ledgers after resolution
             ledgers = get_all_ledgers()
             all_open = []
             all_closed = []
@@ -183,96 +240,117 @@ def build_api_response():
             pos["_current_price"] = None
             pos["_unrealized_pnl"] = None
 
-    totals["open_cost"] = sum(p.get("cost", 0) for p in all_open)
-
-    # Sort
+    # Sort: open by timestamp desc, closed by resolved_at desc
     all_open.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
     all_closed.sort(key=lambda x: x.get("resolved_at", x.get("timestamp", "")), reverse=True)
 
     unrealized = sum(p.get("_unrealized_pnl", 0) or 0 for p in all_open)
 
-    response = {
+    return {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "totals": {
-            **{k: round(v, 2) for k, v in totals.items()},
+            **totals,
             "unrealized_pnl": round(unrealized, 2),
             "total_pnl_incl_unrealized": round(totals["pnl"] + unrealized, 2),
         },
         "open_positions": all_open,
-        "closed_trades": all_closed[-50:],
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "closed_trades": all_closed[:50],
+        "strategies": list(ledgers.keys()),
     }
 
-    _cached_response = response
-    _cache_time = now
-    return response
 
-
-HTML_PAGE = """<!DOCTYPE html>
-<html><head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+DASHBOARD_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <title>Polymarket Trading Desk</title>
 <style>
-:root {
+  :root {
     --bg: #0d1117; --surface: #161b22; --border: #30363d;
-    --text: #e6edf3; --muted: #8b949e; --green: #3fb950; --red: #f85149;
-    --yellow: #d29922; --blue: #58a6ff; --orange: #db6d28; --purple: #bc8cff;
-}
-* { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); padding: 12px; }
-h1 { font-size: 20px; font-weight: 600; margin-bottom: 2px; }
-.subtitle { color: var(--muted); font-size: 13px; margin-bottom: 16px; }
-.live-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--green); margin-right: 4px; animation: pulse 2s infinite; }
-@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
-.refresh-bar { position: fixed; top: 0; left: 0; height: 2px; background: var(--blue); transition: width 1s linear; z-index: 100; }
+    --text: #e6edf3; --muted: #8b949e; --green: #3fb950;
+    --red: #f85149; --blue: #58a6ff; --yellow: #d29922;
+    --orange: #db6d28; --purple: #bc8cff;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro', 'Segoe UI', sans-serif;
+    font-size: 14px; padding: 12px; padding-bottom: 40px;
+    -webkit-font-smoothing: antialiased;
+    -webkit-tap-highlight-color: transparent;
+  }
+  h1 { font-size: 18px; font-weight: 600; margin-bottom: 2px; }
+  .subtitle { color: var(--muted); font-size: 11px; margin-bottom: 14px; }
+  .live-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--green); margin-right: 4px; animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+  .refresh-bar { position: fixed; top: 0; left: 0; height: 2px; background: var(--blue); transition: width 1s linear; z-index: 100; }
 
-/* Cards */
-.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 16px; }
-.card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
-.card-label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
-.card-value { font-size: 24px; font-weight: 700; margin: 4px 0; }
-.card-sub { color: var(--muted); font-size: 12px; }
+  /* ── Cards ── */
+  .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-bottom: 16px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
+  .card-label { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2px; }
+  .card-value { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .card-sub { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .green { color: var(--green); } .red { color: var(--red); }
+  .blue { color: var(--blue); } .yellow { color: var(--yellow); }
 
-/* Trade cards (mobile) */
-.trade-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 10px; margin-bottom: 8px; cursor: pointer; }
-.trade-card.win { border-left: 3px solid var(--green); }
-.trade-card.loss { border-left: 3px solid var(--red); }
-.trade-card.open { border-left: 3px solid var(--blue); }
-.tc-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
-.tc-meta { display: flex; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 12px; margin-bottom: 6px; }
-.tc-meta span { white-space: nowrap; }
-.tc-meta a { white-space: nowrap; }
-.tc-reason { font-size: 11px; color: var(--muted); word-break: break-word; }
-.tc-reason.collapsed { display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
-.tc-side { font-weight: 600; }
-.tc-side.up { color: var(--green); }
-.tc-side.down { color: var(--red); }
-.tc-pnl { font-weight: 600; }
-.tc-strat { font-size: 10px; padding: 2px 6px; border-radius: 4px; }
-.strat-reasoning { background: var(--purple); color: #000; }
+  /* ── Section ── */
+  .section { margin-bottom: 16px; }
+  .section-title { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
 
-/* Table (desktop) */
-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-th { text-align: left; color: var(--muted); font-size: 11px; text-transform: uppercase; padding: 6px 8px; border-bottom: 1px solid var(--border); }
-td { padding: 6px 8px; border-bottom: 1px solid var(--border); }
-.reason-cell { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 11px; }
+  /* ── Trade Cards (mobile-first) ── */
+  .trade-card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 12px; margin-bottom: 8px;
+    transition: border-color 0.2s;
+  }
+  .trade-card:active { border-color: var(--blue); }
+  .trade-card.win { border-left: 3px solid var(--green); }
+  .trade-card.loss { border-left: 3px solid var(--red); }
+  .trade-card.open { border-left: 3px solid var(--yellow); }
 
-.green { color: var(--green); } .red { color: var(--red); } .yellow { color: var(--yellow); }
-.empty { color: var(--muted); padding: 20px; text-align: center; }
+  .tc-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+  .tc-side { font-weight: 700; font-size: 15px; }
+  .tc-side.up { color: var(--green); }
+  .tc-side.down { color: var(--red); }
+  .tc-pnl { font-weight: 700; font-size: 15px; font-variant-numeric: tabular-nums; }
+  .tc-meta { display: flex; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 12px; margin-bottom: 6px; }
+  .tc-meta span { white-space: nowrap; }
+  .tc-reason { color: var(--muted); font-size: 12px; line-height: 1.4; }
+  .tc-reason.collapsed { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tc-strat { display: inline-block; padding: 1px 6px; border-radius: 8px; font-size: 10px; font-weight: 600; text-transform: uppercase; }
+  .strat-reasoning { background: rgba(188,140,255,0.15); color: var(--purple); }
+  .strat-sniper { background: rgba(88,166,255,0.15); color: var(--blue); }
+  .strat-momentum { background: rgba(88,166,255,0.15); color: var(--blue); }
+  .strat-mispricing { background: rgba(188,140,255,0.15); color: var(--purple); }
 
-h2 { font-size: 15px; margin: 16px 0 8px; color: var(--muted); }
+  .empty { color: var(--muted); padding: 24px; text-align: center; font-size: 13px; }
+  @keyframes flash { 0% { background: rgba(88,166,255,0.25); } 100% { background: transparent; } }
+  .flash { animation: flash 0.8s ease-out; }
 
-.flash { animation: flash 0.8s ease-out; }
-@keyframes flash { from { background: rgba(88,166,255,0.15); } to { background: transparent; } }
+  /* ── Desktop table view ── */
+  @media (min-width: 768px) {
+    body { padding: 20px 24px; }
+    h1 { font-size: 22px; }
+    .grid { grid-template-columns: repeat(4, 1fr); gap: 12px; }
+    .card-value { font-size: 24px; }
+    .trades-table { display: block; }
+    .trades-cards { display: none; }
+  }
+  @media (max-width: 767px) {
+    .trades-table { display: none; }
+    .trades-cards { display: block; }
+  }
 
-/* Responsive */
-.desktop-only { display: none; }
-.mobile-only { display: block; }
-@media (min-width: 768px) {
-  .desktop-only { display: block; }
-  .mobile-only { display: none; }
-  body { padding: 20px 30px; }
-}
+  /* Desktop table */
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  td { padding: 8px 10px; border-bottom: 1px solid var(--border); font-size: 13px; }
+  tr:hover { background: rgba(88,166,255,0.04); }
+  .reason-cell { color: var(--muted); font-size: 12px; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+  .reason-cell:hover { white-space: normal; }
+  .pnl-pos { color: var(--green); } .pnl-neg { color: var(--red); } .pnl-zero { color: var(--muted); }
 </style>
 </head>
 <body>
@@ -280,24 +358,27 @@ h2 { font-size: 15px; margin: 16px 0 8px; color: var(--muted); }
 <h1>Polymarket Trading Desk</h1>
 <div class="subtitle"><span class="live-dot"></span>Live · <span id="liveClock"></span></div>
 
-<div class="cards" id="cards"></div>
+<div class="grid" id="cards"></div>
 
-<h2>Open Positions</h2>
-<div class="mobile-only" id="openCards"></div>
-<div class="desktop-only" id="openTable"></div>
+<div class="section">
+  <div class="section-title">Open Positions</div>
+  <div class="trades-cards" id="openCards"></div>
+  <div class="trades-table" id="openTable"></div>
+</div>
 
-<h2>Closed Trades</h2>
-<div class="mobile-only" id="closedCards"></div>
-<div class="desktop-only" id="closedTable"></div>
+<div class="section">
+  <div class="section-title">Closed Trades</div>
+  <div class="trades-cards" id="closedCards"></div>
+  <div class="trades-table" id="closedTable"></div>
+</div>
 
 <script>
 const REFRESH_MS = 10000;
-const pnlCls = v => v > 0 ? 'green' : v < 0 ? 'red' : '';
-const pnlStr = (v, sign) => v == null ? '—' : (sign && v > 0 ? '+' : '') + '$' + v.toFixed(2);
-const pctStr = v => v == null ? '—' : (v * 100).toFixed(1) + '¢';
+const pnlCls = v => v > 0.005 ? 'green' : v < -0.005 ? 'red' : '';
+const pnlStr = (v, showPlus=false) => v == null ? '—' : (showPlus && v >= 0 ? '+' : v < 0 ? '-' : '') + '$' + Math.abs(v).toFixed(2);
+const pctStr = v => v == null ? '—' : (v * 100).toFixed(1) + '%';
 const sideCls = s => (s||'').toLowerCase() === 'up' ? 'up' : 'down';
 const stratBadge = s => `<span class="tc-strat strat-${s}">${s}</span>`;
-
 function timeAgo(ts) {
   if (!ts) return '—';
   const d = (Date.now() - new Date(ts).getTime()) / 1000;
@@ -306,7 +387,6 @@ function timeAgo(ts) {
   if (d < 86400) return Math.floor(d/3600) + 'h';
   return Math.floor(d/86400) + 'd';
 }
-
 function timeUntil(ts) {
   if (!ts) return '—';
   const d = (new Date(ts).getTime() - Date.now()) / 1000;
@@ -316,7 +396,6 @@ function timeUntil(ts) {
   if (m > 0) return m + ':' + String(s).padStart(2,'0');
   return s + 's';
 }
-
 function shortTime(ts) {
   if (!ts) return '—';
   return new Date(ts).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
@@ -443,53 +522,95 @@ function renderClosedTable(trades) {
   el.innerHTML = h + '</table>';
 }
 
-let prevData = null;
-function applyData(data) {
-  const t = data.totals;
-  const p = prevData ? prevData.totals : t;
-  const changed = !prevData ||
-      t.pnl !== p.pnl ||
-      t.total_pnl_incl_unrealized !== p.total_pnl_incl_unrealized ||
-      data.open_positions.length !== (prevData?prevData.open_positions.length:0) ||
-      (t.wins !== p.wins || t.losses !== p.losses) ||
-      t.unrealized_pnl !== p.unrealized_pnl;
+function animateBar() {
+  const bar = document.getElementById('refreshBar');
+  bar.style.transition = 'none'; bar.style.width = '0%';
+  requestAnimationFrame(() => { bar.style.transition = `width ${REFRESH_MS}ms linear`; bar.style.width = '100%'; });
+}
 
-  if (changed || !prevData) {
-    renderCards(data);
-    renderOpenCards(data.open_positions);
-    renderClosedCards(data.closed_trades);
-    renderOpenTable(data.open_positions);
-    renderClosedTable(data.closed_trades);
-    if (prevData) {
-      document.querySelectorAll('.card').forEach(el => {
-        el.classList.add('flash');
-        void el.offsetWidth;
-      });
+let prevData = null;
+
+function flashEl(el) {
+  if (!el) return;
+  el.classList.remove('flash');
+  void el.offsetWidth; // reflow to restart animation
+  el.classList.add('flash');
+}
+
+function applyData(data) {
+  const prev = prevData;
+  prevData = JSON.parse(JSON.stringify(data));
+
+  renderCards(data);
+  renderOpenCards(data.open_positions);
+  renderClosedCards(data.closed_trades);
+  renderOpenTable(data.open_positions);
+  renderClosedTable(data.closed_trades);
+  // clock handled by setInterval above
+
+  // Flash changed card values
+  if (prev) {
+    const t = data.totals, p = prev.totals;
+    const cardEls = document.querySelectorAll('#cards .card');
+    const checks = [
+      t.total_pnl_incl_unrealized !== p.total_pnl_incl_unrealized,
+      (t.wins !== p.wins || t.losses !== p.losses),
+      data.open_positions.length !== prev.open_positions.length,
+      t.unrealized_pnl !== p.unrealized_pnl,
+    ];
+    checks.forEach((changed, i) => { if (changed && cardEls[i]) flashEl(cardEls[i]); });
+
+    // Flash new/changed trade cards
+    if (data.open_positions.length !== prev.open_positions.length) {
+      const el = document.querySelector('#openCards .trade-card');
+      if (el) flashEl(el);
+    }
+    if (data.closed_trades.length !== prev.closed_trades.length) {
+      const el = document.querySelector('#closedCards .trade-card');
+      if (el) flashEl(el);
     }
   }
-  prevData = data;
-  // clock handled by setInterval above
 }
 
 // SSE: real-time push updates
 let sseConnected = false;
 function startSSE() {
   const es = new EventSource('/api/stream');
-  es.onmessage = (e) => {
+  es.addEventListener('update', e => {
     try {
       const data = JSON.parse(e.data);
       applyData(data);
       sseConnected = true;
       document.querySelector('.live-dot').style.background = 'var(--green)';
     } catch(err) { console.error('SSE parse error:', err); }
-  };
+  });
   es.onerror = () => {
     sseConnected = false;
     document.querySelector('.live-dot').style.background = 'var(--yellow)';
     es.close();
+    // Reconnect after 3s
     setTimeout(startSSE, 3000);
   };
 }
+
+// Initial fetch then start SSE
+async function init() {
+  try {
+    const resp = await fetch('/api/data');
+    const data = await resp.json();
+    applyData(data);
+  } catch(e) { console.error('Initial fetch failed:', e); }
+  startSSE();
+}
+
+// Fallback poll every 30s in case SSE drops
+setInterval(async () => {
+  if (sseConnected) return;
+  try {
+    const resp = await fetch('/api/data');
+    applyData(await resp.json());
+  } catch(e) {}
+}, 30000);
 
 // Live clock
 setInterval(() => {
@@ -505,24 +626,6 @@ setInterval(() => {
   });
 }, 1000);
 
-// Fallback poll every 30s in case SSE drops
-setInterval(async () => {
-  if (sseConnected) return;
-  try {
-    const resp = await fetch('/api/data');
-    applyData(await resp.json());
-  } catch(e) {}
-}, 30000);
-
-async function init() {
-  try {
-    const resp = await fetch('/api/data');
-    const data = await resp.json();
-    applyData(data);
-  } catch(e) { console.error('Initial fetch failed:', e); }
-  startSSE();
-}
-
 init();
 </script>
 </body>
@@ -532,6 +635,7 @@ init();
 import hashlib
 import threading
 
+# Track ledger state for SSE change detection
 _ledger_hash = ""
 _ledger_lock = threading.Lock()
 
@@ -547,6 +651,11 @@ def get_ledger_hash():
     return h.hexdigest()
 
 
+import base64
+
+DASH_USER = "david"
+DASH_PASS = "polymarket2026"
+
 class DashboardHandler(BaseHTTPRequestHandler):
     def _check_auth(self):
         auth = self.headers.get("Authorization", "")
@@ -559,21 +668,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return False
 
     def do_GET(self):
-        # SSE stream and data API skip auth (page already authenticated)
-        if self.path not in ("/api/stream", "/api/data", "/api/health") and not self._check_auth():
+        # SSE stream uses cookies from authenticated page, skip auth for stream/data
+        if self.path not in ("/api/stream", "/api/data") and not self._check_auth():
             self.send_response(401)
             self.send_header("WWW-Authenticate", 'Basic realm="Trading Desk"')
             self.end_headers()
             return
-
-        if self.path == "/api/health":
-            self.send_response(200)
-            self.send_header("Content-Type", "text/plain")
-            self.send_header("Content-Length", "2")
-            self.end_headers()
-            self.wfile.write(b"ok")
-            return
-        elif self.path == "/api/data":
+        if self.path == "/api/data":
             data = build_api_response()
             body = json.dumps(data, default=str).encode()
             self.send_response(200)
@@ -582,55 +683,68 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
         elif self.path == "/api/stream":
-            self.send_response(200)
-            self.send_header("Content-Type", "text/event-stream")
-            self.send_header("Cache-Control", "no-cache")
-            self.send_header("Connection", "keep-alive")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.end_headers()
-            global _ledger_hash
-            last_hash = ""
-            try:
-                while True:
-                    current_hash = get_ledger_hash()
-                    if current_hash != last_hash:
-                        data = build_api_response()
-                        msg = f"data: {json.dumps(data, default=str)}\n\n"
-                        self.wfile.write(msg.encode())
-                        self.wfile.flush()
-                        last_hash = current_hash
-                    time.sleep(5)
-            except (BrokenPipeError, ConnectionResetError):
-                pass
-        else:
-            body = HTML_PAGE.encode()
+            self._handle_sse()
+        elif self.path == "/" or self.path == "/index.html":
+            body = DASHBOARD_HTML.encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/html")
-            self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def _handle_sse(self):
+        """Server-Sent Events stream — pushes data on ledger changes or every 5s heartbeat."""
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+
+        last_hash = ""
+        try:
+            while True:
+                current_hash = get_ledger_hash()
+                changed = current_hash != last_hash
+                last_hash = current_hash
+
+                if changed:
+                    data = build_api_response()
+                    payload = json.dumps(data, default=str)
+                    self.wfile.write(f"event: update\ndata: {payload}\n\n".encode())
+                    self.wfile.flush()
+                else:
+                    # Heartbeat to keep connection alive
+                    self.wfile.write(f": heartbeat\n\n".encode())
+                    self.wfile.flush()
+
+                # Check every 2 seconds for changes
+                time.sleep(2)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass  # Client disconnected
 
     def log_message(self, format, *args):
-        sys.stderr.write(f"[HTTP] {self.client_address[0]} {format % args}\n")
+        pass  # silence request logs
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--port", type=int, default=8850)
+    parser = argparse.ArgumentParser(description="Polymarket Dashboard")
+    parser.add_argument("--port", type=int, default=8850, help="Port (default: 8850)")
     args = parser.parse_args()
 
+    from socketserver import ThreadingMixIn
     class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
         daemon_threads = True
     server = ThreadedHTTPServer(("0.0.0.0", args.port), DashboardHandler)
-    server.daemon_threads = True
     print(f"📊 Dashboard live at http://localhost:{args.port}")
     print(f"   Press Ctrl+C to stop")
-    print("-" * 40)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\nShutting down...")
-        server.shutdown()
+        print("\nStopped.")
+        server.server_close()
 
 
 if __name__ == "__main__":

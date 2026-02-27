@@ -25,44 +25,34 @@ from urllib.request import urlopen, Request
 from urllib.error import URLError
 
 BOT_DIR = Path(__file__).parent
+LEDGER_PATH = BOT_DIR / "ledgers" / "reasoning.json"
 GAMMA_BASE = "https://gamma-api.polymarket.com"
 CLOB_BASE = "https://clob.polymarket.com"
 CHAINLINK_FEED_ID = "0x00039d9e45394f473ab1f050a1b963e6b05351e52d71e507509ada0c95ed75b8"
 CHAINLINK_API = "https://data.chain.link/api/query-timescale"
 
-TOTAL_POSITION = 30.0
+MAX_POSITION = 100.0  # Maximum trade size at 100% conviction
+MIN_EDGE = 0.05       # Minimum edge (conviction - market_price) to trade
 
 TRANCHES = [
-    {"id": 1, "trigger_elapsed": 120, "base_size": 30.0},  # single tranche, full size, 2min in
+    {"id": 1, "trigger_elapsed": 120},
 ]
 
-def scale_size(base, confidence, entry_price=None):
-    """Scale position size by confidence and entry price zone.
+def kelly_size(conviction, market_price):
+    """Position sizing via Kelly Criterion.
     
-    From our data:
-    - C2 is the sweet spot (59% WR, $4.37/trade) → size up
-    - C1 is marginal (42% WR) → size down
-    - C3+ is losing → size down
-    - Cheap shares (<0.25) have huge asymmetry → size up
-    - Expensive shares (>0.55) have 81% WR → size up  
-    - Mid-range (0.25-0.55) is danger zone → size down
+    size = MAX_POSITION × (conviction - market_price) / (1 - market_price)
+    
+    conviction: 0.0-1.0 (agent's estimated probability of winning)
+    market_price: entry price (market's implied probability)
+    Returns dollar size, or 0 if edge < MIN_EDGE.
     """
-    confidence = max(1, min(5, confidence))
-    
-    # Confidence multiplier: C1=0.4, C2=1.3, C3=0.7, C4=0.9, C5=1.0
-    conf_mult = {1: 0.4, 2: 1.3, 3: 0.7, 4: 0.9, 5: 1.0}[confidence]
-    
-    # Entry price multiplier (applied when we know the price)
-    price_mult = 1.0
-    if entry_price is not None:
-        if entry_price < 0.25:
-            price_mult = 1.4   # huge asymmetry, size up
-        elif entry_price > 0.55:
-            price_mult = 1.3   # high win rate, size up
-        elif 0.30 <= entry_price <= 0.50:
-            price_mult = 0.6   # danger zone, size down
-    
-    return round(base * conf_mult * price_mult, 2)
+    edge = conviction - market_price
+    if edge < MIN_EDGE:
+        return 0.0
+    kelly = edge / (1 - market_price)
+    kelly = max(0.0, min(1.0, kelly))  # clamp to [0, 1]
+    return round(MAX_POSITION * kelly, 2)
 
 
 def fetch_json(url, timeout=8):
@@ -72,6 +62,36 @@ def fetch_json(url, timeout=8):
             return json.loads(resp.read())
     except:
         return None
+
+
+def log_pass(brief, reason, pass_type="agent"):
+    """Log a pass/skip to the ledger for post-hoc analysis."""
+    try:
+        ledger = json.loads(LEDGER_PATH.read_text()) if LEDGER_PATH.exists() else {}
+        if "passes" not in ledger:
+            ledger["passes"] = []
+        entry = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "pass_type": pass_type,  # "agent", "pre_filter", "underwater"
+            "reason": reason[:200],
+            "btc_price": brief.get("chainlink_current", 0) if isinstance(brief, dict) else 0,
+            "delta": brief.get("delta_from_strike", 0) if isinstance(brief, dict) else 0,
+            "strike": brief.get("strike_price", 0) if isinstance(brief, dict) else 0,
+            "market_slug": brief.get("polymarket", {}).get("slug", "") if isinstance(brief, dict) else "",
+        }
+        # Add momentum/CVD if available
+        if isinstance(brief, dict):
+            mom = brief.get("momentum_alignment", {})
+            entry["momentum_score"] = mom.get("score", None)
+            entry["momentum_strength"] = mom.get("strength", None)
+            tech = brief.get("technical", {})
+            entry["cvd"] = tech.get("cvd_net", None)
+        ledger["passes"].append(entry)
+        # Keep last 200 passes
+        ledger["passes"] = ledger["passes"][-200:]
+        LEDGER_PATH.write_text(json.dumps(ledger, indent=2))
+    except Exception as e:
+        print(f"  ⚠️  Failed to log pass: {e}")
 
 
 # ---- Market Data Gathering ----
@@ -434,6 +454,41 @@ def build_brief():
                 "signal": "coinbase premium" if spread > 10 else "coinbase discount" if spread < -10 else "aligned",
             }
 
+    # HTF trend analysis (1h/4h/1d EMA crosses + funding)
+    htf_signals = []
+    for tf, period, weight in [("1h", 48, 1), ("4h", 42, 2), ("1d", 30, 1)]:
+        kl = fetch_json(f"https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval={tf}&limit={period}")
+        if kl and len(kl) >= 21:
+            closes = [float(k[4]) for k in kl]
+            def _ema(data, p):
+                m = 2 / (p + 1)
+                v = sum(data[:p]) / p
+                for d in data[p:]:
+                    v = (d - v) * m + v
+                return v
+            ema9 = _ema(closes, 9)
+            ema21 = _ema(closes, 21)
+            direction = "bullish" if ema9 > ema21 else "bearish"
+            htf_signals.append({"tf": tf, "direction": direction, "weight": weight,
+                                "ema9": round(ema9, 0), "ema21": round(ema21, 0)})
+    # Funding rate
+    fr = fetch_json("https://fapi.binance.com/fapi/v1/fundingRate?symbol=BTCUSDT&limit=3")
+    if fr:
+        avg_fr = sum(float(f["fundingRate"]) for f in fr) / len(fr)
+        fr_signal = "bearish" if avg_fr > 0.0005 else "bullish" if avg_fr < -0.0005 else "neutral"
+        htf_signals.append({"tf": "funding", "direction": fr_signal, "weight": 1, "rate": round(avg_fr * 100, 4)})
+    # Composite score
+    bullish_w = sum(s["weight"] for s in htf_signals if s["direction"] == "bullish")
+    bearish_w = sum(s["weight"] for s in htf_signals if s["direction"] == "bearish")
+    score = bullish_w - bearish_w  # positive = bullish, negative = bearish
+    composite = "bullish" if score >= 2 else "bearish" if score <= -2 else "neutral"
+    brief["htf_trend"] = {
+        "signals": htf_signals,
+        "composite": composite,
+        "score": score,
+        "summary": f"{composite} ({score:+d}): " + ", ".join(f"{s['tf']}={s['direction']}" for s in htf_signals)
+    }
+
     # Mempool fees
     mempool = fetch_json("https://mempool.space/api/v1/fees/recommended")
     if mempool:
@@ -462,10 +517,32 @@ def build_brief():
 def trigger_agent(brief, tranche, prior_decisions, dry_run=False):
     """Spawn an OpenClaw agent to make a trade decision."""
     tranche_id = tranche["id"]
-    base_size = tranche["base_size"]
+    base_size = MAX_POSITION  # for display only
     trade_cmd = f"python3 {BOT_DIR / 'reasoning-trader.py'}"
 
-    brief_json = json.dumps(brief, indent=2, default=str)
+    # Save brief snapshot for post-hoc analysis
+    briefs_dir = BOT_DIR / "briefs"
+    briefs_dir.mkdir(exist_ok=True)
+    brief_file = briefs_dir / f"{brief.get('window_start', 0)}_T{tranche_id}.json"
+    brief_file.write_text(json.dumps(brief, indent=2, default=str))
+
+    # Compact brief for the agent — strip raw candle arrays, keep summaries
+    compact = dict(brief)
+    for key in ["candles_1m", "candles_15m", "candles_1h"]:
+        if key in compact:
+            candles = compact[key]
+            greens = sum(1 for c in candles if c.get("c") == "Green")
+            reds = len(candles) - greens
+            closes = [c["close"] for c in candles]
+            net = round(closes[-1] - closes[0], 1) if len(closes) > 1 else 0
+            avg_range = round(sum(c.get("range", 0) for c in candles) / len(candles), 1) if candles else 0
+            last_close = closes[-1] if closes else 0
+            compact[key] = f"{greens}G/{reds}R net={net:+.1f} avgRange={avg_range} last={last_close}"
+    # Strip price_trajectory to last 3 points
+    if "price_trajectory" in compact and isinstance(compact["price_trajectory"], list):
+        compact["price_trajectory"] = compact["price_trajectory"][-3:]
+
+    brief_json = json.dumps(compact, indent=2, default=str)
 
     prior_context = ""
     if prior_decisions:
@@ -493,9 +570,25 @@ RULES:
   Momentum bets: 75% win rate, +$70 PnL
   Reversal bets: 28% win rate, -$28 PnL
   At |Δ| < $75: reversal wins only 18% of the time!
-  RULE: If BTC is ABOVE strike (Δ > 0), bet UP. If BELOW strike (Δ < 0), bet DOWN.
+  RULE: If BTC is ABOVE strike (Δ > 0), lean UP. If BELOW strike (Δ < 0), lean DOWN.
+  But delta alone is NOT enough. You MUST confirm with momentum/flow signals before trading.
+  
+  PASS RULES (mandatory — override delta):
+  - If momentum_alignment direction OPPOSES delta AND momentum strength is "moderate" or "strong" → PASS
+  - If CVD signal opposes delta AND sell/buy flow is >70% against delta → PASS  
+  - If you recognize a pattern from a previous losing trade → PASS
+  - If more than 2 major signals contradict delta → PASS
+  - When in doubt, PASS. Missing a trade costs nothing. A bad trade costs real money.
+  
+  TRADE only when delta AND momentum/flow AGREE. Alignment = edge. Conflict = no edge.
+  
+  HTF TREND CONTEXT — use to confirm or challenge your 5-min read:
+  - Check htf_trend in the brief (1h/4h/1d EMA crosses + funding rate)
+  - If HTF trend ALIGNS with your delta direction → higher conviction, confirms the move
+  - If HTF trend OPPOSES your delta direction → lower conviction, the move may reverse
+  - HTF trend alone is NOT a reason to trade or pass — it adds context, not overrides
+  - A strong HTF trend opposing delta + weak momentum alignment = strong PASS signal
   Only consider reversal if: |Δ| > $150 AND momentum_alignment is "strong" in the opposite direction AND multiple HTF candles support reversal.
-  When in doubt, GO WITH THE DELTA.
 
 ANALYZE (signals ranked by importance):
 1. **delta_from_strike** — THE most important signal. Positive delta → lean Up. Negative → lean Down. DO NOT fight the delta unless you have overwhelming evidence.
@@ -510,32 +603,27 @@ ANALYZE (signals ranked by importance):
 
 DO NOT use Hurst regime or RSI overbought/oversold as reasons to bet AGAINST the current delta. Our data proves this loses money.
 
-CONFIDENCE SCORING (1-5) — C2 is our historical sweet spot:
-  1 = Slight lean, barely any edge. Size: ${scale_size(base_size, 1)}
-  2 = Good signal, supporting data aligns with delta. Size: ${scale_size(base_size, 2)} ← BEST historical performance
-  3 = Strong edge, multiple signals confirm. Size: ${scale_size(base_size, 3)}
-  4 = Very strong setup, clear mispricing. Size: ${scale_size(base_size, 4)}
-  5 = Slam dunk, everything aligns. Size: ${scale_size(base_size, 5)}
+POSITION SIZING — Kelly Criterion:
+  You output your CONVICTION (0-100%) = your estimated probability that your side wins.
+  The system computes: edge = conviction - market_price
+  If edge < 5%: trade is rejected (no edge).
+  size = ${MAX_POSITION} × (conviction - market_price) / (1 - market_price)
+  Maximum position: ${MAX_POSITION} at 100% conviction.
+  
+  Examples at entry=0.50: conv=60% → $20, conv=70% → $40, conv=80% → $60, conv=90% → $80
 
-PRICE ZONE MULTIPLIER (apply ON TOP of confidence size):
-  Entry < 0.25: multiply size by 1.4 (huge asymmetry — small loss if wrong, big win if right)
-  Entry > 0.55: multiply size by 1.3 (81% historical win rate)
-  Entry 0.30-0.50: multiply size by 0.6 (danger zone — worst risk/reward)
-  Other: 1.0x
-Prefer C2 — our data shows C2 has 59% WR and $4.37/trade. C1 is too tentative, C3+ overthinks it.
-
-This is paper trading — we WANT data. Trade when you see any edge (>5%). Don't wait for certainty — by then the market has priced it in and there's no edge left.
+This is paper trading — we WANT data. Trade when you see edge (>5%). Don't wait for certainty.
 
 IF TRADING, respond with EXACTLY this format on the FIRST line, then run the command:
-TRADE [UP/DOWN] [CONFIDENCE 1-5] [PRICE]
+TRADE [UP/DOWN] [CONVICTION 0-100] [PRICE]
 
 Then execute:
 ```
-{trade_cmd} --trade "SIDE" "PRICE" "T{tranche_id}/C[conf]: reasoning" --size SIZE
+{trade_cmd} --trade "SIDE" "PRICE" "T{tranche_id}/conv[XX]: reasoning" --size SIZE --confidence XX --delta {compact.get('delta_from_strike', 0)} --strike {compact.get('strike', 0)} --momentum {compact.get('momentum_alignment', {}).get('score', 0) if isinstance(compact.get('momentum_alignment'), dict) else 0} --brief-file "{brief_file}"
 ```
-Where SIZE is the scaled amount from the confidence table above.
+Where SIDE is Up or Down, PRICE is the entry price from the brief, SIZE is computed by you using the Kelly formula above, XX is your conviction 0-100, and reasoning explains why.
 
-IF PASSING: respond with EXACTLY: PASS [CONFIDENCE 0] — reason
+IF PASSING: respond with EXACTLY: PASS [CONVICTION 0] — reason
 
 First resolve open positions:
 ```
@@ -544,13 +632,13 @@ First resolve open positions:
 
 Be fast."""
 
-    cmd = ["openclaw", "agent", "--agent", "main", "-m", message]
+    cmd = ["openclaw", "agent", "--agent", "polymarket-trader", "--session-id", "trading-5m", "-m", message]
 
     ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
     print(f"  [{ts}] 🧠 T{tranche_id} — triggering agent (base ${base_size:.0f}, {brief.get('remaining_s', '?')}s left)...")
 
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=45)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
         output = result.stdout.strip() if result.stdout else ""
         decision = {"tranche": tranche_id, "action": "UNKNOWN", "reasoning": ""}
 
@@ -560,17 +648,17 @@ Be fast."""
                 if line.strip():
                     print(f"  [{ts}]    {line.strip()[:100]}")
 
-            # Parse decision and confidence from output
+            # Parse decision and conviction from output
             full = output.upper()
 
-            # Try to extract confidence
-            conf_match = re.search(r'CONFIDENCE\s+(\d)', full)
-            if conf_match:
-                decision["confidence"] = int(conf_match.group(1))
+            # Extract conviction (0-100)
+            conv_match = re.search(r'CONVICTION\s+(\d+)', full)
+            if conv_match:
+                decision["conviction"] = int(conv_match.group(1))
 
             if "PASS" in full:
                 decision["action"] = "PASS"
-                decision["confidence"] = decision.get("confidence", 0)
+                decision["conviction"] = decision.get("conviction", 0)
                 decision["reasoning"] = output.strip()[-100:]
             elif "TRADE" in full and "UP" in full and "DOWN" not in full.split("TRADE")[1][:20]:
                 decision["action"] = "BUY_UP"
@@ -585,11 +673,13 @@ Be fast."""
                     decision["action"] = "BUY_DOWN"
                 decision["reasoning"] = output.strip()[-100:]
 
-            # Log confidence and scaled size
-            conf = decision.get("confidence", 3)
-            sized = scale_size(base_size, conf)
+            # Log conviction and Kelly-sized position
+            conv = decision.get("conviction", 50) / 100.0
+            entry_price = brief.get("polymarket", {}).get("up_price", 0.5) if decision.get("action") == "BUY_UP" else brief.get("polymarket", {}).get("down_price", 0.5)
+            sized = kelly_size(conv, entry_price)
             if decision["action"] not in ("PASS", "UNKNOWN"):
-                print(f"  [{ts}]    📊 Confidence: {conf}/5 → ${sized:.2f} (base ${base_size:.0f})")
+                edge = conv - entry_price
+                print(f"  [{ts}]    📊 Conviction: {decision.get('conviction',0)}% | Edge: {edge*100:.1f}% | Kelly size: ${sized:.2f} (max ${MAX_POSITION:.0f})")
 
         if result.returncode != 0 and result.stderr:
             print(f"  [{ts}] ⚠️  Agent error: {result.stderr[:200]}")
@@ -615,8 +705,8 @@ def run_loop(dry_run=False):
     print(f"🧠 Polymarket 5-Min BTC Reasoning Loop — Tranched Entry")
     print(f"   {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}")
     print(f"   Mode: {'DRY RUN' if dry_run else 'PAPER TRADING'}")
-    print(f"   Single tranche: T1@120s(${TRANCHES[0]['base_size']:.0f}) — ${TOTAL_POSITION:.0f} total")
-    print(f"   Sizing: confidence 1-5 scales 0.5x-1.5x base")
+    print(f"   Single tranche: T1@120s — max ${MAX_POSITION:.0f}")
+    print(f"   Sizing: Kelly Criterion (conviction 0-100%, min edge {MIN_EDGE*100:.0f}%)")
     print(f"{'='*65}\n")
 
     window_state = {}
@@ -679,8 +769,9 @@ def run_loop(dry_run=False):
                     print(f"  [{ts}] 📈 BTC=${cl:,.2f} | Δ={delta:+.2f} | {remaining:.0f}s left")
 
                     # Pre-filter: skip agent call if delta too small (coin flip territory)
-                    if abs(delta) < 15:
-                        print(f"  [{ts}] ⏭️  |Δ|={abs(delta):.0f} < $15 — no edge, skipping agent call")
+                    if abs(delta) < 5:
+                        print(f"  [{ts}] ⏭️  |Δ|={abs(delta):.0f} < $5 — no edge, skipping agent call")
+                        log_pass(brief, f"|Δ|={abs(delta):.0f} < $5 — no edge", "pre_filter")
                         continue
 
                     # Skip T2/T3 if earlier tranche in this window is losing
@@ -694,10 +785,13 @@ def run_loop(dry_run=False):
                             if losing:
                                 ts2 = datetime.now(timezone.utc).strftime("%H:%M:%S")
                                 print(f"  [{ts2}] ⛔ T{tid} SKIPPED — earlier {last_side} position underwater (Δ={delta:+.0f})")
+                                log_pass(brief, f"T{tid} earlier {last_side} underwater (Δ={delta:+.0f})", "underwater")
                                 continue
 
                     decision = trigger_agent(brief, tranche, state["decisions"], dry_run=dry_run)
                     state["decisions"].append(decision)
+                    if decision.get("action") == "PASS":
+                        log_pass(brief, decision.get("reasoning", "agent PASS"), "agent")
 
             # Background resolve every 15s
             if now - last_resolve > 15:
