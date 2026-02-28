@@ -32,7 +32,7 @@ CHAINLINK_FEED_ID = "0x00039d9e45394f473ab1f050a1b963e6b05351e52d71e507509ada0c9
 CHAINLINK_API = "https://data.chain.link/api/query-timescale"
 
 MAX_POSITION = 100.0  # Maximum trade size at 100% conviction
-MIN_EDGE = 0.05       # Minimum edge (conviction - market_price) to trade
+MIN_EDGE = 0.10       # Minimum edge (conviction - market_price) to trade, accounts for fees
 MAX_CONVICTION_RATIO = 1.8  # Max conviction / market_price ratio (sanity check)
 
 # Monitoring window config
