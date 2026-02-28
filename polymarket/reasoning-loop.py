@@ -35,9 +35,16 @@ MAX_POSITION = 100.0  # Maximum trade size at 100% conviction
 MIN_EDGE = 0.05       # Minimum edge (conviction - market_price) to trade
 MAX_CONVICTION_RATIO = 1.8  # Max conviction / market_price ratio (sanity check)
 
-TRANCHES = [
-    {"id": 1, "trigger_elapsed": 120},
-]
+# Monitoring window config
+MONITOR_START = 60          # Start sampling delta at 60s into window
+MONITOR_END = 200           # Latest possible entry (100s remaining)
+SAMPLE_INTERVAL = 15        # Sample delta every 15s
+MIN_CONSISTENT = 3          # Need 3 of last 4 samples on same side
+MAX_ENTRY_PRICE = 0.65      # Don't buy if price > 0.65
+MAX_ENTRIES_PER_WINDOW = 2  # Primary + one scale-in
+MAX_COMBINED_COST = 100     # Combined cap per window
+SCALE_IN_DELTA_RATIO = 2.0  # Delta must double from first entry to scale in
+SCALE_IN_MIN_CONSISTENT = 4 # Scale-in needs 4 of 4 samples consistent
 
 def kelly_size(conviction, market_price):
     """Position sizing via Kelly Criterion.
@@ -867,6 +874,36 @@ Be fast."""
 
 # ---- Main Loop ----
 
+def get_quick_delta():
+    """Fast delta check — just Chainlink price vs strike. No full brief."""
+    now = time.time()
+    current_window = int(now) // 300 * 300
+    cl_url = f"{CHAINLINK_API}?query=LIVE_STREAM_REPORTS_QUERY&variables=%7B%22feedId%22%3A%22{CHAINLINK_FEED_ID}%22%7D"
+    cl_data = fetch_json(cl_url)
+    if not cl_data or "data" not in cl_data:
+        return None, None, None
+    nodes = cl_data["data"].get("liveStreamReports", {}).get("nodes", [])
+    if not nodes:
+        return None, None, None
+    prices = []
+    for n in nodes[:60]:
+        ts = datetime.fromisoformat(n["validFromTimestamp"].replace("Z", "+00:00")).timestamp()
+        price = float(n["price"]) / 1e18
+        prices.append({"ts": ts, "price": price})
+    current = prices[0]["price"]
+    # Strike = price closest to window start
+    best_strike = None
+    best_dist = float("inf")
+    for p in prices:
+        d = abs(p["ts"] - current_window)
+        if d < best_dist:
+            best_dist = d
+            best_strike = p["price"]
+    if best_strike:
+        return round(current, 2), round(best_strike, 2), round(current - best_strike, 2)
+    return round(current, 2), None, None
+
+
 def run_loop(dry_run=False, live=False):
     if live:
         mode_str = "🔴 LIVE TRADING"
@@ -875,11 +912,13 @@ def run_loop(dry_run=False, live=False):
     else:
         mode_str = "PAPER TRADING"
     print(f"{'='*65}")
-    print(f"🧠 Polymarket 5-Min BTC Reasoning Loop — Tranched Entry")
+    print(f"🧠 Polymarket 5-Min BTC Reasoning Loop — Monitoring Window")
     print(f"   {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}")
     print(f"   Mode: {mode_str}")
-    print(f"   Single tranche: T1@120s — max ${MAX_POSITION:.0f}")
-    print(f"   Sizing: Kelly Criterion (conviction 0-100%, min edge {MIN_EDGE*100:.0f}%)")
+    print(f"   Monitor: {MONITOR_START}-{MONITOR_END}s | Sample every {SAMPLE_INTERVAL}s")
+    print(f"   Entry: {MIN_CONSISTENT}/4 consistent + |Δ|≥$30 + price≤{MAX_ENTRY_PRICE}")
+    print(f"   Max {MAX_ENTRIES_PER_WINDOW} entries/window, ${MAX_COMBINED_COST} combined cap")
+    print(f"   Sizing: Kelly Criterion (min edge {MIN_EDGE*100:.0f}%)")
     print(f"{'='*65}\n")
 
     window_state = {}
@@ -896,8 +935,15 @@ def run_loop(dry_run=False, live=False):
             # Init window state
             if current_window not in window_state:
                 window_state[current_window] = {
-                    "triggered": set(),
+                    "delta_samples": [],       # list of (elapsed, delta) tuples
+                    "last_sample": 0,          # timestamp of last sample
+                    "entries": [],             # trades made this window
+                    "entry_delta": None,       # delta at first entry
+                    "entry_side": None,        # side of first entry
+                    "combined_cost": 0,        # total cost this window
+                    "agent_triggered": False,  # agent called this cycle
                     "decisions": [],
+                    "done": False,             # no more entries possible
                 }
 
             state = window_state[current_window]
@@ -906,65 +952,162 @@ def run_loop(dry_run=False, live=False):
             if now - last_status > 30:
                 ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
                 window_str = datetime.fromtimestamp(current_window, tz=timezone.utc).strftime("%H:%M")
-                ledger_path = BOT_DIR / "ledgers" / "reasoning.json"
-                if ledger_path.exists():
-                    ledger = json.loads(ledger_path.read_text())
+                live_ledger = BOT_DIR / "ledgers" / "live.json"
+                if live_ledger.exists():
+                    ledger = json.loads(live_ledger.read_text())
                     s = ledger["stats"]
-                    triggered = ",".join(f"T{t}" for t in sorted(state["triggered"])) or "—"
-                    print(f"  [{ts}] Window {window_str} | {elapsed:.0f}s in, {remaining:.0f}s left | "
-                          f"tranches: {triggered} | PnL=${s['total_pnl']:+.2f} {s['wins']}W/{s['losses']}L")
+                    n_entries = len(state["entries"])
+                    samples = len(state["delta_samples"])
+                    status_extra = f" | samples: {samples} | entries: {n_entries}/{MAX_ENTRIES_PER_WINDOW}"
+                    print(f"  [{ts}] Window {window_str} | {elapsed:.0f}s in, {remaining:.0f}s left"
+                          f"{status_extra} | PnL=${s['total_pnl']:+.2f} {s['wins']}W/{s['losses']}L")
                 else:
                     print(f"  [{ts}] Window {window_str} | {elapsed:.0f}s in, {remaining:.0f}s left")
                 last_status = now
 
-            # Check each tranche
-            for tranche in TRANCHES:
-                tid = tranche["id"]
-                trigger_at = tranche["trigger_elapsed"]
+            # ---- Monitoring Window Logic ----
+            if not state["done"] and MONITOR_START <= elapsed <= MONITOR_END:
 
-                if tid in state["triggered"]:
-                    continue
+                # Sample delta at intervals
+                if now - state["last_sample"] >= SAMPLE_INTERVAL:
+                    state["last_sample"] = now
+                    btc, strike, delta = get_quick_delta()
+                    if delta is not None:
+                        state["delta_samples"].append((round(elapsed), delta))
+                        ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
 
-                # Trigger if we've passed the elapsed threshold (with 5s tolerance)
-                if elapsed >= trigger_at and elapsed < trigger_at + 30:
-                    state["triggered"].add(tid)
+                        samples = state["delta_samples"]
+                        n = len(samples)
 
-                    ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
-                    print(f"\n  [{ts}] 📊 T{tid} — Building market brief...")
-                    brief = build_brief()
+                        # Check consistency: how many of last 4 on same side?
+                        recent = samples[-4:] if n >= 4 else samples
+                        pos_count = sum(1 for _, d in recent if d > 0)
+                        neg_count = sum(1 for _, d in recent if d < 0)
+                        consistent_side = None
+                        consistent_count = 0
+                        if pos_count >= MIN_CONSISTENT:
+                            consistent_side = "Up"
+                            consistent_count = pos_count
+                        elif neg_count >= MIN_CONSISTENT:
+                            consistent_side = "Down"
+                            consistent_count = neg_count
 
-                    if "chainlink_current" not in brief or "polymarket" not in brief:
-                        print(f"  [{ts}] ⚠️  Incomplete data, skipping T{tid}")
-                        continue
+                        # Check if delta is growing (last 3 samples)
+                        growing = False
+                        if n >= 3:
+                            last3 = [abs(d) for _, d in samples[-3:]]
+                            growing = last3[-1] >= last3[-2] >= last3[-3]
 
-                    delta = brief.get("delta_from_strike", 0)
-                    cl = brief.get("chainlink_current", 0)
-                    print(f"  [{ts}] 📈 BTC=${cl:,.2f} | Δ={delta:+.2f} | {remaining:.0f}s left")
+                        print(f"  [{ts}] 📡 Sample {n}: Δ={delta:+.1f} | "
+                              f"{'✅' if consistent_side else '❌'} {consistent_count}/{len(recent)} consistent "
+                              f"{'(' + consistent_side + ')' if consistent_side else ''} | "
+                              f"{'📈 growing' if growing else '📉 fading'}")
 
-                    # Pre-filter: skip agent call if delta too small (coin flip territory)
-                    if abs(delta) < 30:
-                        print(f"  [{ts}] ⏭️  |Δ|={abs(delta):.0f} < $30 — no edge, skipping agent call")
-                        log_pass(brief, f"|Δ|={abs(delta):.0f} < $30 — no edge", "pre_filter")
-                        continue
+                        # ---- Entry Decision ----
+                        n_entries = len(state["entries"])
 
-                    # Skip T2/T3 if earlier tranche in this window is losing
-                    if tid > 1 and state["decisions"]:
-                        prior_trades = [d for d in state["decisions"] if d.get("action", "").startswith("BUY")]
-                        if prior_trades:
-                            last_trade = prior_trades[-1]
-                            last_side = "Up" if last_trade["action"] == "BUY_UP" else "Down"
-                            delta = brief.get("delta_from_strike", 0)
-                            losing = (last_side == "Up" and delta < -10) or (last_side == "Down" and delta > 10)
-                            if losing:
-                                ts2 = datetime.now(timezone.utc).strftime("%H:%M:%S")
-                                print(f"  [{ts2}] ⛔ T{tid} SKIPPED — earlier {last_side} position underwater (Δ={delta:+.0f})")
-                                log_pass(brief, f"T{tid} earlier {last_side} underwater (Δ={delta:+.0f})", "underwater")
+                        if n_entries >= MAX_ENTRIES_PER_WINDOW:
+                            continue
+
+                        if abs(delta) < 30:
+                            continue
+
+                        # FIRST ENTRY: need MIN_CONSISTENT of last 4
+                        if n_entries == 0 and consistent_side and n >= MIN_CONSISTENT and elapsed >= 120:
+                            # Check if delta is not shrinking
+                            if n >= 2 and abs(samples[-1][1]) < abs(samples[-2][1]) * 0.5:
+                                print(f"  [{ts}] ⏭️  Delta shrinking fast, waiting...")
                                 continue
 
-                    decision = trigger_agent(brief, tranche, state["decisions"], dry_run=dry_run, live=live)
-                    state["decisions"].append(decision)
-                    if decision.get("action") == "PASS":
-                        log_pass(brief, decision.get("reasoning", "agent PASS"), "agent")
+                            ts2 = datetime.now(timezone.utc).strftime("%H:%M:%S")
+                            print(f"\n  [{ts2}] 🎯 CONFIRMED: {consistent_side} ({consistent_count}/{len(recent)}) | Δ={delta:+.1f} | Building brief...")
+                            brief = build_brief()
+
+                            if "chainlink_current" not in brief or "polymarket" not in brief:
+                                print(f"  [{ts2}] ⚠️  Incomplete data, skipping")
+                                continue
+
+                            # Check entry price
+                            pm = brief.get("polymarket", {})
+                            if consistent_side == "Up":
+                                entry_price = pm.get("up_mid", pm.get("up_best_ask", pm.get("up_price", 0.5)))
+                            else:
+                                entry_price = pm.get("down_mid", pm.get("down_best_ask", pm.get("down_price", 0.5)))
+
+                            if entry_price > MAX_ENTRY_PRICE:
+                                print(f"  [{ts2}] ⏭️  {consistent_side} price {entry_price:.2f} > {MAX_ENTRY_PRICE} — too expensive")
+                                log_pass(brief, f"{consistent_side} price {entry_price:.2f} > {MAX_ENTRY_PRICE}", "price_filter")
+                                continue
+
+                            # Trigger agent
+                            tranche = {"id": 1}
+                            decision = trigger_agent(brief, tranche, state["decisions"], dry_run=dry_run, live=live)
+                            state["decisions"].append(decision)
+
+                            if decision.get("action", "").startswith("BUY"):
+                                state["entries"].append(decision)
+                                state["entry_delta"] = delta
+                                state["entry_side"] = consistent_side
+                                state["combined_cost"] += decision.get("cost", 0)
+                                print(f"  [{ts2}] ✅ Entry 1: {consistent_side} | Δ={delta:+.1f}")
+                            elif decision.get("action") == "PASS":
+                                log_pass(brief, decision.get("reasoning", "agent PASS"), "agent")
+
+                        # SCALE-IN: need stricter confirmation + delta doubled
+                        elif n_entries == 1 and state["entry_side"] and consistent_side == state["entry_side"]:
+                            entry_delta = abs(state["entry_delta"])
+                            current_delta = abs(delta)
+
+                            # Delta must have grown significantly
+                            if current_delta < entry_delta * SCALE_IN_DELTA_RATIO:
+                                continue
+
+                            # Need all 4 of last 4 consistent
+                            if consistent_count < SCALE_IN_MIN_CONSISTENT or len(recent) < SCALE_IN_MIN_CONSISTENT:
+                                continue
+
+                            # Delta must be growing for last 3 samples
+                            if not growing:
+                                continue
+
+                            # Check combined cost cap
+                            remaining_budget = MAX_COMBINED_COST - state["combined_cost"]
+                            if remaining_budget < 5:
+                                continue
+
+                            ts2 = datetime.now(timezone.utc).strftime("%H:%M:%S")
+                            print(f"\n  [{ts2}] 🎯 SCALE-IN: {consistent_side} ({consistent_count}/4) | "
+                                  f"Δ={delta:+.1f} (was {state['entry_delta']:+.1f}, {current_delta/entry_delta:.1f}×) | Building brief...")
+                            brief = build_brief()
+
+                            if "chainlink_current" not in brief or "polymarket" not in brief:
+                                continue
+
+                            pm = brief.get("polymarket", {})
+                            if consistent_side == "Up":
+                                entry_price = pm.get("up_mid", pm.get("up_best_ask", pm.get("up_price", 0.5)))
+                            else:
+                                entry_price = pm.get("down_mid", pm.get("down_best_ask", pm.get("down_price", 0.5)))
+
+                            if entry_price > MAX_ENTRY_PRICE:
+                                print(f"  [{ts2}] ⏭️  {consistent_side} price {entry_price:.2f} > {MAX_ENTRY_PRICE}")
+                                continue
+
+                            tranche = {"id": 2}
+                            decision = trigger_agent(brief, tranche, state["decisions"], dry_run=dry_run, live=live)
+                            state["decisions"].append(decision)
+
+                            if decision.get("action", "").startswith("BUY"):
+                                state["entries"].append(decision)
+                                state["combined_cost"] += decision.get("cost", 0)
+                                print(f"  [{ts2}] ✅ Scale-in: {consistent_side} | Δ={delta:+.1f} | combined ${state['combined_cost']:.0f}")
+
+            # Past monitoring window — mark done
+            if elapsed > MONITOR_END and not state["done"]:
+                state["done"] = True
+                if not state["entries"]:
+                    ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
+                    print(f"  [{ts}] ⏹️  Window closed — no entries")
 
             # Background resolve every 15s
             if now - last_resolve > 15:
@@ -983,22 +1126,17 @@ def run_loop(dry_run=False, live=False):
                 for old_w in sorted(window_state.keys())[:-10]:
                     del window_state[old_w]
 
-            # Sleep adaptively
-            next_tranche_in = float("inf")
-            for tranche in TRANCHES:
-                if tranche["id"] not in state["triggered"]:
-                    wait = tranche["trigger_elapsed"] - elapsed
-                    if wait > 0:
-                        next_tranche_in = min(next_tranche_in, wait)
-
-            if next_tranche_in == float("inf"):
-                time.sleep(min(10, max(1, remaining - 5)))
-            elif next_tranche_in > 15:
-                time.sleep(10)
-            elif next_tranche_in > 3:
-                time.sleep(2)
+            # Sleep — tight during monitoring, relaxed otherwise
+            if MONITOR_START <= elapsed <= MONITOR_END and not state["done"]:
+                # During monitoring: sleep until next sample
+                next_sample = state["last_sample"] + SAMPLE_INTERVAL - now
+                time.sleep(max(1, min(5, next_sample)))
+            elif elapsed < MONITOR_START:
+                # Before monitoring: sleep until it starts
+                time.sleep(min(10, max(1, MONITOR_START - elapsed)))
             else:
-                time.sleep(1)
+                # After monitoring: relax until next window
+                time.sleep(min(10, max(1, remaining - 5)))
 
         except KeyboardInterrupt:
             print("\n  Shutting down...")
