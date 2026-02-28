@@ -381,13 +381,26 @@ def resolve_all():
             except:
                 pass
 
-        # Get settlement price from Chainlink at window close time
-        window_end_ts = window_ts + 300 if window_ts else None
-        btc_at_settlement = get_chainlink_price(at_timestamp=window_end_ts)
-        strike = pos.get("strike_price", 0)
+        # Get actual outcome from Polymarket
+        result = None
+        try:
+            pm_data = fetch_json(f"{GAMMA_BASE}/events?slug={slug}")
+            if pm_data:
+                for m in pm_data[0].get("markets", []):
+                    if m.get("closed"):
+                        outcome_prices = json.loads(m.get("outcomePrices", "[]"))
+                        outcomes = json.loads(m.get("outcomes", "[]"))
+                        if outcome_prices and outcomes:
+                            # Winner has price "1"
+                            for i, price in enumerate(outcome_prices):
+                                if price == "1" and i < len(outcomes):
+                                    result = outcomes[i]
+                                    break
+                        break
+        except Exception as e:
+            print(f"⚠️  Could not fetch market outcome: {e}")
 
-        if btc_at_settlement and strike:
-            result = "Up" if btc_at_settlement > strike else "Down"
+        if result:
             won = pos["side"].lower() == result.lower()
             shares = pos.get("shares", 0)
             cost = pos.get("cost", 0)
