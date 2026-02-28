@@ -488,7 +488,7 @@ function renderClosedCards(trades) {
   if (!trades.length) { el.innerHTML = '<div class="empty">No closed trades yet</div>'; return; }
   el.innerHTML = trades.map(t => {
     const cls = t.outcome === 'win' ? 'win' : 'loss';
-    const icon = t.outcome === 'win' ? '<span style="color:#4caf50">●</span>' : '<span style="color:#f44336">●</span>';
+    const icon = t.outcome === 'win' ? '<span style="color:#4caf50;font-size:8px;vertical-align:middle">●</span>' : '<span style="color:#f44336;font-size:8px;vertical-align:middle">●</span>';
     const reason = t.reasoning || t.reason || '';
     return `<div class="trade-card ${cls}" onclick="this.querySelector('.tc-reason')&&this.querySelector('.tc-reason').classList.toggle('collapsed')">
       <div class="tc-header">
@@ -555,7 +555,7 @@ function renderClosedTable(trades, openPositions) {
     </tr>`;
   }
   for (const t of trades) {
-    const icon = t.outcome === 'win' ? '<span style="color:#4caf50">●</span>' : '<span style="color:#f44336">●</span>';
+    const icon = t.outcome === 'win' ? '<span style="color:#4caf50;font-size:8px;vertical-align:middle">●</span>' : '<span style="color:#f44336;font-size:8px;vertical-align:middle">●</span>';
     h += `<tr>
       <td>${shortTime(t.timestamp)}</td>
       <td>${typeBadge(t._strategy)}</td>

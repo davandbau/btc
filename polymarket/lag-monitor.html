@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BTC Price Lag Monitor</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0a0a0a; color: #e0e0e0; font-family: 'SF Mono', 'Fira Code', monospace; }
+  .container { max-width: 1100px; margin: 0 auto; padding: 20px; }
+  h1 { font-size: 14px; color: #666; text-transform: uppercase; letter-spacing: 2px; margin-bottom: 20px; text-align: center; }
+
+  .prices { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+  .panel { background: #111; border: 1px solid #222; border-radius: 8px; padding: 16px; }
+  .panel-label { font-size: 10px; color: #555; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px; }
+  .price { font-size: 28px; font-weight: 700; letter-spacing: -1px; }
+  .sub { font-size: 11px; color: #444; margin-top: 4px; }
+  .binance .price { color: #f0b90b; }
+  .chainlink .price { color: #375bd2; }
+  .polymarket .price { color: #ff6b00; }
+
+  .exchanges { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 12px; }
+  .ex { background: #111; border: 1px solid #1a1a1a; border-radius: 6px; padding: 10px; }
+  .ex-name { font-size: 9px; color: #555; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px; }
+  .ex-price { font-size: 16px; font-weight: 600; color: #888; }
+  .ex-lag { font-size: 10px; color: #555; margin-top: 2px; }
+
+  .lag-bar { background: #111; border: 1px solid #222; border-radius: 8px; padding: 16px; text-align: center; margin-bottom: 12px; }
+  .lag-label { font-size: 10px; color: #555; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px; }
+  .lag-value { font-size: 42px; font-weight: 700; }
+  .lag-unit { font-size: 12px; color: #555; margin-left: 4px; }
+  .lag-desc { font-size: 12px; margin-top: 6px; color: #555; }
+
+  .bottom { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+  .info-box { background: #111; border: 1px solid #222; border-radius: 8px; padding: 14px; }
+  .info-row { display: flex; justify-content: space-between; align-items: center; padding: 3px 0; }
+  .info-label { font-size: 11px; color: #555; }
+  .info-value { font-size: 13px; font-weight: 600; }
+  .green { color: #22c55e; }
+  .red { color: #ef4444; }
+
+  .ticker { background: #111; border: 1px solid #222; border-radius: 8px; padding: 10px 16px; max-height: 150px; overflow-y: auto; }
+  .ticker-row { font-size: 10px; color: #444; padding: 2px 0; display: flex; gap: 10px; }
+  .ticker-row .time { color: #333; min-width: 85px; }
+  .ticker-row .evt { color: #555; }
+  .ticker-row.arb .evt { color: #22c55e; font-weight: 600; }
+  .ticker-row.lag .evt { color: #f0b90b; }
+
+  .status { display: flex; gap: 12px; justify-content: center; margin-top: 12px; flex-wrap: wrap; }
+  .dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 3px; vertical-align: middle; }
+  .dot.on { background: #22c55e; }
+  .dot.off { background: #ef4444; }
+  .status span { font-size: 10px; color: #444; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>BTC Price Lag — Exchanges vs Chainlink vs Polymarket</h1>
+
+  <div class="prices">
+    <div class="panel binance">
+      <div class="panel-label">Binance BTC/USDT (websocket)</div>
+      <div class="price" id="bin-price">—</div>
+      <div class="sub" id="bin-sub">connecting...</div>
+    </div>
+    <div class="panel chainlink">
+      <div class="panel-label">Chainlink BTC/USD (settlement oracle)</div>
+      <div class="price" id="cl-price">—</div>
+      <div class="sub" id="cl-sub">loading...</div>
+    </div>
+    <div class="panel polymarket">
+      <div class="panel-label">Polymarket / Chainlink (retail sees this)</div>
+      <div class="price" id="pm-price">—</div>
+      <div class="sub" id="pm-sub">connecting...</div>
+    </div>
+  </div>
+
+  <div class="exchanges">
+    <div class="ex">
+      <div class="ex-name">Coinbase</div>
+      <div class="ex-price" id="cb-price">—</div>
+      <div class="ex-lag" id="cb-lag"></div>
+    </div>
+    <div class="ex">
+      <div class="ex-name">Kraken</div>
+      <div class="ex-price" id="kr-price">—</div>
+      <div class="ex-lag" id="kr-lag"></div>
+    </div>
+    <div class="ex">
+      <div class="ex-name">OKX</div>
+      <div class="ex-price" id="ok-price">—</div>
+      <div class="ex-lag" id="ok-lag"></div>
+    </div>
+    <div class="ex">
+      <div class="ex-name">Bybit</div>
+      <div class="ex-price" id="bb-price">—</div>
+      <div class="ex-lag" id="bb-lag"></div>
+    </div>
+  </div>
+
+  <div class="lag-bar">
+    <div class="lag-label">Exchange Average → Polymarket / Chainlink Lag</div>
+    <div>
+      <span class="lag-value" id="lag-value">—</span>
+      <span class="lag-unit" id="lag-unit"></span>
+    </div>
+    <div class="lag-desc" id="lag-desc">waiting for both feeds</div>
+  </div>
+
+  <div class="bottom">
+    <div class="info-box">
+      <div class="panel-label" style="margin-bottom:6px">Polymarket Book</div>
+      <div class="info-row">
+        <span class="info-label">UP ask</span>
+        <span class="info-value" id="up-ask">—</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">DOWN ask</span>
+        <span class="info-value" id="down-ask">—</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">Combined</span>
+        <span class="info-value" id="combined">—</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">Arb</span>
+        <span class="info-value" id="arb-status">—</span>
+      </div>
+    </div>
+    <div class="info-box">
+      <div class="panel-label" style="margin-bottom:6px">Window Stats</div>
+      <div class="info-row">
+        <span class="info-label">Strike</span>
+        <span class="info-value" id="strike-price">—</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">Avg vs strike</span>
+        <span class="info-value" id="strike-delta">—</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">Max lag (Avg→PM)</span>
+        <span class="info-value" id="max-lag">—</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">Avg lag (Avg→PM)</span>
+        <span class="info-value" id="avg-lag">—</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="ticker" id="ticker"></div>
+
+  <div class="status">
+    <span><span class="dot" id="bin-dot"></span> Binance</span>
+    <span><span class="dot" id="cb-dot"></span> Coinbase</span>
+    <span><span class="dot" id="kr-dot"></span> Kraken</span>
+    <span><span class="dot" id="ok-dot"></span> OKX</span>
+    <span><span class="dot" id="bb-dot"></span> Bybit</span>
+    <span><span class="dot" id="cl-dot"></span> Chainlink</span>
+    <span><span class="dot" id="pm-dot"></span> Polymarket</span>
+    <span><span class="dot" id="book-dot"></span> CLOB Book</span>
+  </div>
+</div>
+
+<script>
+let binPrice=null, clPrice=null, pmPrice=null, strike=null;
+let cbPrice=null, krPrice=null, okPrice=null, bbPrice=null;
+let upTokenId=null, downTokenId=null;
+let tickerLog=[], lagSamples=[], maxLag=0;
+
+const $=id=>document.getElementById(id);
+function fmt(p){return p?'$'+p.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}):'—';}
+function ts(){return new Date().toLocaleTimeString('en-US',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit',fractionalSecondDigits:3});}
+function addTick(msg,cls){tickerLog.unshift({time:ts(),msg,cls:cls||''});if(tickerLog.length>50)tickerLog.pop();$('ticker').innerHTML=tickerLog.map(t=>`<div class="ticker-row ${t.cls}"><span class="time">${t.time}</span><span class="evt">${t.msg}</span></div>`).join('');}
+
+function lagStr(ref, price) {
+  if (!ref || !price) return '';
+  const d = price - ref;
+  return (d>=0?'+':'')+d.toFixed(2);
+}
+
+// ─── Binance (websocket) ───
+function connectBinance(){
+  const ws=new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@trade');
+  ws.onopen=()=>{$('bin-dot').className='dot on';addTick('Binance connected');};
+  ws.onclose=()=>{$('bin-dot').className='dot off';setTimeout(connectBinance,2000);};
+  ws.onerror=()=>ws.close();
+  ws.onmessage=(e)=>{const d=JSON.parse(e.data);binPrice=parseFloat(d.p);$('bin-price').textContent=fmt(binPrice);$('bin-sub').textContent=ts();updateLag();};
+}
+
+// ─── Coinbase (websocket) ───
+function connectCoinbase(){
+  const ws=new WebSocket('wss://ws-feed.exchange.coinbase.com');
+  ws.onopen=()=>{ws.send(JSON.stringify({type:'subscribe',product_ids:['BTC-USD'],channels:['ticker']}));$('cb-dot').className='dot on';addTick('Coinbase connected');};
+  ws.onclose=()=>{$('cb-dot').className='dot off';setTimeout(connectCoinbase,3000);};
+  ws.onerror=()=>ws.close();
+  ws.onmessage=(e)=>{const d=JSON.parse(e.data);if(d.type==='ticker'&&d.price){cbPrice=parseFloat(d.price);$('cb-price').textContent=fmt(cbPrice);$('cb-lag').textContent=binPrice?lagStr(binPrice,cbPrice)+' vs Bin':'';}};
+}
+
+// ─── Kraken (websocket v2) ───
+function connectKraken(){
+  const ws=new WebSocket('wss://ws.kraken.com/v2');
+  ws.onopen=()=>{ws.send(JSON.stringify({method:'subscribe',params:{channel:'ticker',symbol:['BTC/USD']}}));$('kr-dot').className='dot on';addTick('Kraken connected');};
+  ws.onclose=()=>{$('kr-dot').className='dot off';setTimeout(connectKraken,3000);};
+  ws.onerror=()=>ws.close();
+  ws.onmessage=(e)=>{try{const d=JSON.parse(e.data);if(d.channel==='ticker'&&d.data){const p=d.data[0];krPrice=parseFloat(p.last);$('kr-price').textContent=fmt(krPrice);$('kr-lag').textContent=binPrice?lagStr(binPrice,krPrice)+' vs Bin':'';}}catch(ex){}};
+}
+
+// ─── OKX (websocket) ───
+function connectOKX(){
+  const ws=new WebSocket('wss://ws.okx.com:8443/ws/v5/public');
+  ws.onopen=()=>{ws.send(JSON.stringify({op:'subscribe',args:[{channel:'tickers',instId:'BTC-USDT'}]}));$('ok-dot').className='dot on';addTick('OKX connected');};
+  ws.onclose=()=>{$('ok-dot').className='dot off';setTimeout(connectOKX,3000);};
+  ws.onerror=()=>ws.close();
+  ws.onmessage=(e)=>{try{const d=JSON.parse(e.data);if(d.data&&d.data[0]&&d.data[0].last){okPrice=parseFloat(d.data[0].last);$('ok-price').textContent=fmt(okPrice);$('ok-lag').textContent=binPrice?lagStr(binPrice,okPrice)+' vs Bin':'';}}catch(ex){}};
+}
+
+// ─── Bybit (websocket v5) ───
+function connectBybit(){
+  const ws=new WebSocket('wss://stream.bybit.com/v5/public/spot');
+  ws.onopen=()=>{ws.send(JSON.stringify({op:'subscribe',args:['tickers.BTCUSDT']}));$('bb-dot').className='dot on';addTick('Bybit connected');};
+  ws.onclose=()=>{$('bb-dot').className='dot off';setTimeout(connectBybit,3000);};
+  ws.onerror=()=>ws.close();
+  ws.onmessage=(e)=>{try{const d=JSON.parse(e.data);if(d.data&&d.data.lastPrice){bbPrice=parseFloat(d.data.lastPrice);$('bb-price').textContent=fmt(bbPrice);$('bb-lag').textContent=binPrice?lagStr(binPrice,bbPrice)+' vs Bin':'';}}catch(ex){}};
+}
+
+// ─── Polymarket Live Price (same Chainlink source, separate poll) ───
+async function pollPolymarket(){
+  try{
+    const resp=await fetch('/api/chainlink?pm=1');
+    const data=await resp.json();
+    const nodes=data?.data?.liveStreamReports?.nodes;
+    if(nodes&&nodes.length>0){
+      pmPrice=parseFloat(nodes[0].price)/1e18;
+      $('pm-price').textContent=fmt(pmPrice);
+      $('pm-sub').textContent=nodes[0].validFromTimestamp.split('T')[1].replace('+00:00','')+' UTC';
+      $('pm-dot').className='dot on';
+      updateLag();
+    }
+  }catch(e){$('pm-dot').className='dot off';}
+}
+
+// ─── Chainlink (proxy poll) ───
+async function pollChainlink(){
+  try{
+    const resp=await fetch('/api/chainlink');
+    const data=await resp.json();
+    const nodes=data?.data?.liveStreamReports?.nodes;
+    if(nodes&&nodes.length>0){
+      clPrice=parseFloat(nodes[0].price)/1e18;
+      $('cl-price').textContent=fmt(clPrice);
+      $('cl-sub').textContent=nodes[0].validFromTimestamp.split('T')[1].replace('+00:00','')+' UTC';
+      $('cl-dot').className='dot on';
+    }
+  }catch(e){$('cl-dot').className='dot off';}
+}
+
+// ─── Tokens + Strike ───
+async function pollTokens(){
+  try{
+    const resp=await fetch('/latest-tokens.json?t='+Date.now());
+    if(!resp.ok)return;
+    const d=await resp.json();
+    if(d.up_token)upTokenId=d.up_token;
+    if(d.down_token)downTokenId=d.down_token;
+    if(d.strike&&d.strike!==strike){
+      strike=d.strike;
+      $('strike-price').textContent=fmt(strike);
+      lagSamples=[];maxLag=0;
+      $('max-lag').textContent='—';$('avg-lag').textContent='—';
+      addTick(`New window — strike ${fmt(strike)}`,'info');
+    }
+  }catch(e){}
+}
+
+// ─── CLOB Book ───
+async function pollBook(){
+  if(!upTokenId||!downTokenId)return;
+  try{
+    const[ub,db]=await Promise.all([
+      fetch(`https://clob.polymarket.com/book?token_id=${upTokenId}`).then(r=>r.json()),
+      fetch(`https://clob.polymarket.com/book?token_id=${downTokenId}`).then(r=>r.json()),
+    ]);
+    const ua=ub.asks?.length?parseFloat(ub.asks.sort((a,b)=>a.price-b.price)[0].price):null;
+    const da=db.asks?.length?parseFloat(db.asks.sort((a,b)=>a.price-b.price)[0].price):null;
+    $('up-ask').textContent=ua!=null?(ua*100).toFixed(1)+'¢':'—';
+    $('down-ask').textContent=da!=null?(da*100).toFixed(1)+'¢':'—';
+    $('book-dot').className='dot on';
+    if(ua!=null&&da!=null){
+      const c=ua+da;
+      $('combined').textContent=c.toFixed(4);
+      if(c<1){$('arb-status').textContent=`YES +${(1-c).toFixed(4)}`;$('arb-status').className='info-value green';addTick(`ARB: ${ua}+${da}=${c.toFixed(4)}`,'arb');}
+      else{$('arb-status').textContent=`NO +${(c-1).toFixed(4)}`;$('arb-status').className='info-value red';}
+    }
+  }catch(e){$('book-dot').className='dot off';}
+}
+
+function exchangeAvg(){
+  const prices=[binPrice,cbPrice,krPrice,okPrice,bbPrice].filter(p=>p!=null);
+  return prices.length>0?prices.reduce((a,b)=>a+b,0)/prices.length:null;
+}
+
+function updateLag(){
+  const avg=exchangeAvg();
+  if(avg&&pmPrice){
+    const diff=avg-pmPrice;
+    const abs=Math.abs(diff);
+    $('lag-value').textContent=(diff>=0?'+':'')+diff.toFixed(2);
+    $('lag-unit').textContent='USD';
+    if(abs<10){$('lag-desc').textContent=`In sync (${[binPrice,cbPrice,krPrice,okPrice,bbPrice].filter(p=>p!=null).length} exchanges)`;$('lag-value').style.color='#555';}
+    else if(abs<50){$('lag-desc').textContent=`${diff>0?'Exchanges':'Polymarket'} lead`;$('lag-value').style.color='#4a9eff';}
+    else{$('lag-desc').textContent=`${diff>0?'Exchanges':'Polymarket'} lead — LARGE LAG`;$('lag-value').style.color='#22c55e';addTick(`LAG $${abs.toFixed(0)}: Avg ${fmt(avg)} vs PM ${fmt(pmPrice)}`,'lag');}
+    lagSamples.push(abs);if(lagSamples.length>1000)lagSamples.shift();
+    if(abs>maxLag){maxLag=abs;if(abs>30)addTick(`Max lag: ${fmt(abs)}`,'lag');}
+    $('max-lag').textContent=fmt(maxLag);
+    $('avg-lag').textContent=fmt(lagSamples.reduce((a,b)=>a+b,0)/lagSamples.length);
+  }
+  if(strike&&avg){
+    const sd=avg-strike;
+    $('strike-delta').textContent=(sd>=0?'+':'')+sd.toFixed(2);
+    $('strike-delta').style.color=sd>0?'#22c55e':sd<0?'#ef4444':'#555';
+  }
+}
+
+// ─── Init ───
+connectBinance();
+connectCoinbase();
+connectKraken();
+connectOKX();
+connectBybit();
+pollPolymarket();
+pollChainlink();
+pollTokens();
+setInterval(pollPolymarket,500);  // PM price every 500ms
+setInterval(pollChainlink,1000);
+setInterval(pollTokens,5000);
+setInterval(pollBook,500);
+</script>
+</body>
+</html>

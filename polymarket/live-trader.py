@@ -55,7 +55,7 @@ CHAINLINK_API = "https://data.chain.link/api/query-timescale"
 
 def load_creds():
     if not CREDS_FILE.exists():
-        print("❌ Credentials file not found")
+        print("[ERR] Credentials file not found")
         sys.exit(1)
     return json.loads(CREDS_FILE.read_text())
 
@@ -122,7 +122,7 @@ def log_trade(trade_data):
 
 def check_kill_switch():
     if KILL_SWITCH_FILE.exists():
-        print("🛑 KILL SWITCH ACTIVE — touch ~/POLY_KILL detected. No trades.")
+        print("[KILL] KILL SWITCH ACTIVE — touch ~/POLY_KILL detected. No trades.")
         sys.exit(1)
 
 
@@ -137,14 +137,14 @@ def check_daily_loss(ledger):
     for p in ledger["open_positions"]:
         daily_pnl -= p.get("cost", 0) + p.get("fee", 0)
     if daily_pnl < -MAX_DAILY_LOSS:
-        print(f"🛑 DAILY LOSS LIMIT — ${abs(daily_pnl):.2f} lost today (limit: ${MAX_DAILY_LOSS})")
+        print(f"[KILL] DAILY LOSS LIMIT — ${abs(daily_pnl):.2f} lost today (limit: ${MAX_DAILY_LOSS})")
         return False
     return True
 
 
 def check_concurrent(ledger):
     if len(ledger["open_positions"]) >= MAX_CONCURRENT:
-        print(f"🛑 MAX CONCURRENT — {len(ledger['open_positions'])} positions open (limit: {MAX_CONCURRENT})")
+        print(f"[KILL] MAX CONCURRENT — {len(ledger['open_positions'])} positions open (limit: {MAX_CONCURRENT})")
         return False
     return True
 
@@ -161,21 +161,23 @@ def validate_size(size):
 # ---- Trading ----
 
 def get_token_for_side(slug, side):
-    """Look up the correct CLOB token ID for a side."""
+    """Look up the correct CLOB token ID for a side. Also returns condition_id."""
     pm_data = fetch_json(f"{GAMMA_BASE}/events?slug={slug}")
     if not pm_data:
-        return None
+        return None, None
     event = pm_data[0]
     for m in event.get("markets", []):
         if not m.get("closed"):
             try:
                 outcomes = json.loads(m.get("outcomes", "[]"))
                 tokens = json.loads(m.get("clobTokenIds", "[]"))
+                condition_id = m.get("conditionId")
                 up_idx = 0 if "Up" in outcomes[0] else 1
-                return tokens[up_idx] if side == "Up" else tokens[1 - up_idx]
+                token = tokens[up_idx] if side == "Up" else tokens[1 - up_idx]
+                return token, condition_id
             except:
                 pass
-    return None
+    return None, None
 
 
 def get_chainlink_price(at_timestamp=None):
@@ -253,7 +255,7 @@ def record_trade(side, entry_price, reasoning, position_size=MAX_POSITION_SIZE,
         window = now // 300 * 300
         slug = f"btc-updown-5m-{window}"
 
-    token = get_token_for_side(slug, side)
+    token, condition_id = get_token_for_side(slug, side)
     btc_price = get_chainlink_price()
     shares = position_size / entry_price
     fee = calc_fee(shares, entry_price)
@@ -265,6 +267,7 @@ def record_trade(side, entry_price, reasoning, position_size=MAX_POSITION_SIZE,
         "market_end": None,  # Filled from market data
         "side": side,
         "token": token or "unknown",
+        "condition_id": condition_id,
         "entry_price": entry_price,
         "shares": round(shares, 4),
         "cost": round(position_size, 2),
@@ -296,12 +299,14 @@ def record_trade(side, entry_price, reasoning, position_size=MAX_POSITION_SIZE,
 
     if live:
         if not token:
-            print("❌ Could not find token for market")
+            print("[ERR] Could not find token for market")
             return
+        if not condition_id:
+            print("⚠️  No condition_id found — CLOB confirmation will be delayed")
         try:
             creds = load_creds()
             client = get_client(creds)
-            print(f"📡 Placing LIVE order: {side} @ {entry_price} for ${position_size}")
+            print(f"[TX] Placing LIVE order: {side} @ {entry_price} for ${position_size}")
             response = place_order(client, token, side, entry_price, position_size)
             trade["order_response"] = response
             # Update cost/shares with actual fill from CLOB
@@ -312,23 +317,23 @@ def record_trade(side, entry_price, reasoning, position_size=MAX_POSITION_SIZE,
                 trade["cost"] = round(actual_usdc, 6)
                 trade["shares"] = round(actual_shares, 4)
                 trade["fee"] = round(calc_fee(actual_shares, entry_price), 6)
-                print(f"✅ Filled: ${actual_usdc:.2f} USDC for {actual_shares:.1f} shares (intended ${position_size:.2f})")
+                print(f"[OK] Filled: ${actual_usdc:.2f} USDC for {actual_shares:.1f} shares (intended ${position_size:.2f})")
             else:
-                print(f"✅ Order response: {json.dumps(response, indent=2)}")
+                print(f"[OK] Order response: {json.dumps(response, indent=2)}")
             log_trade({"action": "ORDER_PLACED", "response": response, "slug": slug})
         except Exception as e:
-            print(f"❌ Order FAILED: {e}")
+            print(f"[ERR] Order FAILED: {e}")
             log_trade({"action": "ORDER_FAILED", "error": str(e), "slug": slug})
             return
     else:
-        print(f"📋 DRY RUN: Would {side} @ {entry_price} for ${position_size}")
+        print(f"[DRY] DRY RUN: Would {side} @ {entry_price} for ${position_size}")
 
     ledger["open_positions"].append(trade)
     ledger["stats"]["total_trades"] += 1
     ledger["stats"]["total_wagered"] += position_size
     ledger["stats"]["total_fees"] += fee
     save_ledger(ledger)
-    print(f"{'🔴 LIVE' if live else '📋 PAPER'}: {side} @ {entry_price:.3f} | ${position_size:.0f} | {reasoning[:80]}")
+    print(f"{'[LIVE] LIVE' if live else '[DRY] PAPER'}: {side} @ {entry_price:.3f} | ${position_size:.0f} | {reasoning[:80]}")
 
 
 def show_balance():
@@ -347,15 +352,80 @@ def show_positions():
         print(f"  {p['side']} @ {p['entry_price']} | ${p['cost']} | {p['slug']} | {'LIVE' if p.get('mode')=='LIVE' else 'DRY'}")
 
 
+def _finalize_position(pos, result, ledger, source="chainlink"):
+    """Move a position from open to trades with outcome."""
+    now_utc = datetime.now(timezone.utc)
+    won = pos["side"].lower() == result.lower()
+    shares = pos.get("shares", 0)
+    cost = pos.get("cost", 0)
+    fee = pos.get("fee", 0)
+
+    if won:
+        pnl = round(shares - cost - fee, 6)
+    else:
+        pnl = round(-cost - fee, 6)
+
+    pos["resolved"] = True
+    pos["outcome"] = "win" if won else "loss"
+    pos["pnl"] = pnl
+    pos["resolved_at"] = now_utc.isoformat()
+    pos["market_result"] = result
+    pos["resolution_source"] = source
+    pos["clob_confirmed"] = (source == "clob")
+
+    # Get settlement price from Chainlink
+    try:
+        end_time = datetime.fromisoformat(pos["market_end"].replace("Z", "+00:00"))
+        pos["settlement_price"] = get_chainlink_price(at_timestamp=end_time.timestamp())
+    except:
+        pos["settlement_price"] = None
+
+    ledger["trades"].append(pos)
+    ledger["stats"]["total_pnl"] += pnl
+    if won:
+        ledger["stats"]["wins"] += 1
+        ledger["stats"]["gross_profit"] += pnl
+    else:
+        ledger["stats"]["losses"] += 1
+        ledger["stats"]["gross_loss"] += pnl
+
+    arrow = "▲" if result == "Up" else "▼"
+    src = "clob" if source == "clob" else "chainlink"
+    slug = pos.get("slug", "")
+    print(f"  {arrow} {pos['side']} → {result} | ${pnl:+.2f} | {slug} [{src}]")
+    log_trade({"action": "RESOLVED", "outcome": pos["outcome"], "pnl": pnl, "slug": slug, "source": source})
+
+
+def _get_clob_winner(condition_id):
+    """Query CLOB for the winning outcome. Returns 'Up'/'Down' or None."""
+    if not condition_id:
+        return None
+    try:
+        data = fetch_json(f"{CLOB_BASE}/markets/{condition_id}", timeout=5)
+        if data and data.get("closed"):
+            for t in data.get("tokens", []):
+                if t.get("winner"):
+                    return t["outcome"]
+    except:
+        pass
+    return None
+
+
 def resolve_all():
-    """Resolve expired positions using Chainlink settlement."""
+    """Two-phase resolution:
+    Phase 1 (Chainlink, ~30s): Compare BTC price to strike for immediate resolution.
+    Phase 2 (CLOB, ~5-10min): Confirm via CLOB tokens[].winner — the source of truth.
+    """
     ledger = load_ledger()
-    if not ledger["open_positions"]:
+    if not ledger["open_positions"] and not any(
+        not t.get("clob_confirmed") for t in ledger.get("trades", [])
+    ):
         return
 
     now_utc = datetime.now(timezone.utc)
     still_open = []
 
+    # ---- Phase 1: Chainlink resolve for open positions ----
     for pos in ledger["open_positions"]:
         me = pos.get("market_end")
         if not me:
@@ -368,72 +438,95 @@ def resolve_all():
             still_open.append(pos)
             continue
 
+        # Wait 30s after market end for Chainlink price to settle
         if now_utc < end_time + timedelta(seconds=30):
             still_open.append(pos)
             continue
 
-        # Resolve using Chainlink
-        slug = pos.get("slug", "")
-        window_ts = pos.get("window_start_ts", 0)
-        if not window_ts and slug:
-            try:
-                window_ts = int(slug.split("-")[-1])
-            except:
-                pass
+        # Try CLOB first if condition_id available (it's the source of truth)
+        clob_result = _get_clob_winner(pos.get("condition_id"))
+        if clob_result:
+            _finalize_position(pos, clob_result, ledger, source="clob")
+            continue
 
-        # Get actual outcome from Polymarket
-        result = None
-        try:
-            pm_data = fetch_json(f"{GAMMA_BASE}/events?slug={slug}")
-            if pm_data:
-                for m in pm_data[0].get("markets", []):
-                    if m.get("closed"):
-                        outcome_prices = json.loads(m.get("outcomePrices", "[]"))
-                        outcomes = json.loads(m.get("outcomes", "[]"))
-                        if outcome_prices and outcomes:
-                            # Winner has price "1"
-                            for i, price in enumerate(outcome_prices):
-                                if price == "1" and i < len(outcomes):
-                                    result = outcomes[i]
-                                    break
-                        break
-        except Exception as e:
-            print(f"⚠️  Could not fetch market outcome: {e}")
-
-        if result:
-            won = pos["side"].lower() == result.lower()
-            shares = pos.get("shares", 0)
-            cost = pos.get("cost", 0)
-            fee = pos.get("fee", 0)
-
-            if won:
-                pnl = round(shares - cost - fee, 6)
-            else:
-                pnl = round(-cost - fee, 6)
-
-            pos["resolved"] = True
-            pos["outcome"] = "win" if won else "loss"
-            pos["pnl"] = pnl
-            pos["resolved_at"] = now_utc.isoformat()
-            pos["market_result"] = result
-            pos["settlement_price"] = btc_at_settlement
-
-            ledger["trades"].append(pos)
-            ledger["stats"]["total_pnl"] += pnl
-            if won:
-                ledger["stats"]["wins"] += 1
-                ledger["stats"]["gross_profit"] += pnl
-            else:
-                ledger["stats"]["losses"] += 1
-                ledger["stats"]["gross_loss"] += pnl
-
-            emoji = "✅" if won else "❌"
-            print(f"  {emoji} {pos['side']} → {result} | PnL: ${pnl:+.2f} | {slug}")
-            log_trade({"action": "RESOLVED", "outcome": pos["outcome"], "pnl": pnl, "slug": slug})
-        else:
+        # Fallback: Chainlink price vs strike
+        strike = pos.get("strike_price")
+        if not strike:
             still_open.append(pos)
+            continue
+
+        settlement_price = get_chainlink_price(at_timestamp=end_time.timestamp())
+        if settlement_price is None:
+            still_open.append(pos)
+            continue
+
+        result = "Up" if settlement_price >= strike else "Down"
+        _finalize_position(pos, result, ledger, source="chainlink")
 
     ledger["open_positions"] = still_open
+
+    # ---- Phase 2: CLOB confirmation for unconfirmed trades ----
+    for trade in ledger.get("trades", []):
+        if trade.get("clob_confirmed"):
+            continue
+        if not trade.get("resolved"):
+            continue
+
+        condition_id = trade.get("condition_id")
+        if not condition_id:
+            # Try to get condition_id from Gamma if we don't have it
+            slug = trade.get("slug", "")
+            if slug:
+                try:
+                    pm_data = fetch_json(f"{GAMMA_BASE}/events?slug={slug}")
+                    if pm_data:
+                        for m in pm_data[0].get("markets", []):
+                            cid = m.get("conditionId")
+                            if cid:
+                                trade["condition_id"] = cid
+                                condition_id = cid
+                                break
+                except:
+                    pass
+
+        clob_result = _get_clob_winner(condition_id)
+        if clob_result:
+            expected = trade.get("market_result")
+            if expected and expected.lower() != clob_result.lower():
+                # Mismatch! CLOB disagrees with Chainlink resolution
+                print(f"  ⚠️  CLOB MISMATCH: {trade['slug']} — Chainlink={expected}, CLOB={clob_result}")
+                log_trade({
+                    "action": "CLOB_MISMATCH",
+                    "slug": trade["slug"],
+                    "chainlink_result": expected,
+                    "clob_result": clob_result,
+                })
+                # CLOB is source of truth — correct the outcome
+                old_pnl = trade["pnl"]
+                won = trade["side"].lower() == clob_result.lower()
+                shares = trade.get("shares", 0)
+                cost = trade.get("cost", 0)
+                fee = trade.get("fee", 0)
+                new_pnl = round((shares - cost - fee) if won else (-cost - fee), 6)
+                # Adjust stats
+                ledger["stats"]["total_pnl"] += (new_pnl - old_pnl)
+                if trade["outcome"] == "win" and not won:
+                    ledger["stats"]["wins"] -= 1
+                    ledger["stats"]["losses"] += 1
+                    ledger["stats"]["gross_profit"] -= old_pnl
+                    ledger["stats"]["gross_loss"] += new_pnl
+                elif trade["outcome"] == "loss" and won:
+                    ledger["stats"]["losses"] -= 1
+                    ledger["stats"]["wins"] += 1
+                    ledger["stats"]["gross_loss"] -= old_pnl
+                    ledger["stats"]["gross_profit"] += new_pnl
+                trade["outcome"] = "win" if won else "loss"
+                trade["pnl"] = new_pnl
+                trade["market_result"] = clob_result
+
+            trade["clob_confirmed"] = True
+            trade["clob_confirmed_at"] = now_utc.isoformat()
+
     save_ledger(ledger)
 
 

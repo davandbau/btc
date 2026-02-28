@@ -32,13 +32,13 @@ CHAINLINK_FEED_ID = "0x00039d9e45394f473ab1f050a1b963e6b05351e52d71e507509ada0c9
 CHAINLINK_API = "https://data.chain.link/api/query-timescale"
 
 MAX_POSITION = 100.0  # Maximum trade size at 100% conviction
-MIN_EDGE = 0.10       # Minimum edge (conviction - market_price) to trade, accounts for fees
+MIN_EDGE = 0.05       # Minimum edge (conviction - market_price) to trade, accounts for fees
 MAX_CONVICTION_RATIO = 1.8  # Max conviction / market_price ratio (sanity check)
 
 # Monitoring window config
-MONITOR_START = 60          # Start sampling delta at 60s into window
-MONITOR_END = 200           # Latest possible entry (100s remaining)
-SAMPLE_INTERVAL = 15        # Sample delta every 15s
+MONITOR_START = 30          # Start sampling delta at 30s into window
+MONITOR_END = 150           # Cut off at halfway — later samples are dead money
+SAMPLE_INTERVAL = 10        # Sample delta every 10s (faster confirmation)
 MIN_CONSISTENT = 3          # Need 3 of last 4 samples on same side
 MAX_ENTRY_PRICE = None       # No cap — Kelly sizing handles edge (no edge = $0 size)
 MAX_ENTRIES_PER_WINDOW = 2  # Primary + one scale-in
@@ -749,7 +749,7 @@ Be fast."""
     cmd = ["openclaw", "agent", "--agent", "polymarket-trader", "--session-id", "trading-5m", "-m", message]
 
     ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
-    print(f"  [{ts}] 🧠 T{tranche_id} — triggering agent (base ${base_size:.0f}, {brief.get('remaining_s', '?')}s left)...")
+    print(f"  [{ts}] ◈ T{tranche_id} — triggering agent (base ${base_size:.0f}, {brief.get('remaining_s', '?')}s left)...")
 
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
@@ -757,11 +757,6 @@ Be fast."""
         decision = {"tranche": tranche_id, "action": "UNKNOWN", "reasoning": ""}
 
         if output:
-            lines = output.strip().split('\n')
-            for line in lines[-10:]:
-                if line.strip():
-                    print(f"  [{ts}]    {line.strip()[:100]}")
-
             # Parse JSON response from agent
             clean = output.strip()
             clean = re.sub(r'```json\s*', '', clean)
@@ -782,10 +777,13 @@ Be fast."""
             if json_obj and isinstance(json_obj, dict):
                 action = json_obj.get("action", "").upper()
                 conviction = int(json_obj.get("conviction", 0))
-                reasoning = json_obj.get("reasoning", "")[:150]
+                reasoning = json_obj.get("reasoning", "")
 
                 decision["conviction"] = conviction
                 decision["reasoning"] = reasoning
+
+                # Log clean agent decision
+                print(f"  [{ts}]    Action: {action} | Conviction: {conviction}% | {reasoning}")
 
                 if action == "PASS":
                     decision["action"] = "PASS"
@@ -814,7 +812,7 @@ Be fast."""
                     else:
                         sized = kelly_size(conv, entry_price)
                         edge = conv - entry_price
-                        print(f"  [{ts}]    📊 Conviction: {conviction}% | Edge: {edge*100:.1f}% | Kelly size: ${sized:.2f} (max ${MAX_POSITION:.0f})")
+                        print(f"  [{ts}]    ≡ Conviction: {conviction}% | Edge: {edge*100:.1f}% | Kelly size: ${sized:.2f} (max ${MAX_POSITION:.0f})")
 
                         # Execute trade (paper or live)
                         trade_cmd_exec = [
@@ -874,6 +872,64 @@ Be fast."""
 
 # ---- Main Loop ----
 
+def get_observation_snapshot():
+    """Medium-weight snapshot for observation mode. Returns dict with key signals."""
+    obs = {}
+    
+    # Order book pressure
+    book = fetch_json("https://api.binance.com/api/v3/depth?symbol=BTCUSDT&limit=20")
+    if book:
+        bids = sum(float(b[1]) for b in book["bids"])
+        asks = sum(float(a[1]) for a in book["asks"])
+        ratio = round(bids / asks, 2) if asks > 0 else 999
+        obs["ob"] = "BUY" if ratio > 1.5 else "SELL" if ratio < 0.67 else "BAL"
+        obs["ob_ratio"] = ratio
+
+    # CVD from recent trades
+    trades = fetch_json("https://api.binance.com/api/v3/aggTrades?symbol=BTCUSDT&limit=200")
+    if trades:
+        buy_vol = sum(float(t["q"]) for t in trades if not t["m"])
+        sell_vol = sum(float(t["q"]) for t in trades if t["m"])
+        total = buy_vol + sell_vol
+        obs["cvd"] = "BUY" if buy_vol > sell_vol * 1.3 else "SELL" if sell_vol > buy_vol * 1.3 else "~"
+        obs["buy_pct"] = round(buy_vol / total * 100) if total > 0 else 50
+
+    # 15m and 1h trend from klines
+    for tf, label in [("15m", "15m"), ("1h", "1h")]:
+        klines = fetch_json(f"https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval={tf}&limit=6")
+        if klines:
+            closes = [float(k[4]) for k in klines]
+            greens = sum(1 for k in klines if float(k[4]) >= float(k[1]))
+            net = round(closes[-1] - closes[0], 1)
+            obs[label] = f"{greens}G/{len(klines)-greens}R {net:+.0f}"
+
+    # RSI from 1m candles
+    klines_1m = fetch_json("https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=15")
+    if klines_1m and len(klines_1m) >= 7:
+        closes = [float(k[4]) for k in klines_1m]
+        gains, losses = [], []
+        for i in range(1, len(closes)):
+            diff = closes[i] - closes[i-1]
+            gains.append(max(0, diff))
+            losses.append(max(0, -diff))
+        period = min(6, len(gains))
+        avg_gain = sum(gains[-period:]) / period
+        avg_loss = sum(losses[-period:]) / period
+        if avg_loss == 0:
+            obs["rsi"] = 100
+        else:
+            rs = avg_gain / avg_loss
+            obs["rsi"] = round(100 - (100 / (1 + rs)))
+
+    # Funding rate
+    funding = fetch_json("https://fapi.binance.com/fapi/v1/fundingRate?symbol=BTCUSDT&limit=1")
+    if funding:
+        rate = float(funding[0]["fundingRate"])
+        obs["fund"] = f"{rate*100:+.3f}%"
+
+    return obs
+
+
 def get_quick_delta():
     """Fast delta check — just Chainlink price vs strike. No full brief."""
     now = time.time()
@@ -906,13 +962,13 @@ def get_quick_delta():
 
 def run_loop(dry_run=False, live=False):
     if live:
-        mode_str = "🔴 LIVE TRADING"
+        mode_str = "[LIVE] TRADING"
     elif dry_run:
         mode_str = "DRY RUN"
     else:
         mode_str = "PAPER TRADING"
     print(f"{'='*65}")
-    print(f"🧠 Polymarket 5-Min BTC Reasoning Loop — Monitoring Window")
+    print(f"◈ Polymarket 5-Min BTC Reasoning Loop — Monitoring Window")
     print(f"   {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}")
     print(f"   Mode: {mode_str}")
     print(f"   Monitor: {MONITOR_START}-{MONITOR_END}s | Sample every {SAMPLE_INTERVAL}s")
@@ -998,10 +1054,11 @@ def run_loop(dry_run=False, live=False):
                             last3 = [abs(d) for _, d in samples[-3:]]
                             growing = last3[-1] >= last3[-2] >= last3[-3]
 
-                        print(f"  [{ts}] 📡 Sample {n}: Δ={delta:+.1f} | "
-                              f"{'✅' if consistent_side else '❌'} {consistent_count}/{len(recent)} consistent "
-                              f"{'(' + consistent_side + ')' if consistent_side else ''} | "
-                              f"{'📈 growing' if growing else '📉 fading'}")
+                        side_arrow = ('▲' if consistent_side == 'Up' else '▼') if consistent_side else '○'
+                        print(f"  [{ts}] Sample {n}: Δ={delta:+.1f} | "
+                              f"{'●' if consistent_side else '○'} {consistent_count}/{len(recent)} consistent "
+                              f"{side_arrow} "
+                              f"{'growing' if growing else 'fading'}")
 
                         # ---- Entry Decision ----
                         n_entries = len(state["entries"])
@@ -1020,7 +1077,7 @@ def run_loop(dry_run=False, live=False):
                                 continue
 
                             ts2 = datetime.now(timezone.utc).strftime("%H:%M:%S")
-                            print(f"\n  [{ts2}] 🎯 CONFIRMED: {consistent_side} ({consistent_count}/{len(recent)}) | Δ={delta:+.1f} | Building brief...")
+                            print(f"\n  [{ts2}] ► CONFIRMED: {consistent_side} ({consistent_count}/{len(recent)}) | Δ={delta:+.1f} | Building brief...")
                             brief = build_brief()
 
                             if "chainlink_current" not in brief or "polymarket" not in brief:
@@ -1044,7 +1101,8 @@ def run_loop(dry_run=False, live=False):
                                 state["entry_delta"] = delta
                                 state["entry_side"] = consistent_side
                                 state["combined_cost"] += decision.get("cost", 0)
-                                print(f"  [{ts2}] ✅ Entry 1: {consistent_side} | Δ={delta:+.1f}")
+                                entry_arrow = '▲' if consistent_side == 'Up' else '▼'
+                                print(f"  [{ts2}] {entry_arrow} Entry 1: {consistent_side} | Δ={delta:+.1f}")
                             elif decision.get("action") == "PASS":
                                 log_pass(brief, decision.get("reasoning", "agent PASS"), "agent")
 
@@ -1071,7 +1129,7 @@ def run_loop(dry_run=False, live=False):
                                 continue
 
                             ts2 = datetime.now(timezone.utc).strftime("%H:%M:%S")
-                            print(f"\n  [{ts2}] 🎯 SCALE-IN: {consistent_side} ({consistent_count}/4) | "
+                            print(f"\n  [{ts2}] ► SCALE-IN: {consistent_side} ({consistent_count}/4) | "
                                   f"Δ={delta:+.1f} (was {state['entry_delta']:+.1f}, {current_delta/entry_delta:.1f}×) | Building brief...")
                             brief = build_brief()
 
@@ -1091,14 +1149,51 @@ def run_loop(dry_run=False, live=False):
                             if decision.get("action", "").startswith("BUY"):
                                 state["entries"].append(decision)
                                 state["combined_cost"] += decision.get("cost", 0)
-                                print(f"  [{ts2}] ✅ Scale-in: {consistent_side} | Δ={delta:+.1f} | combined ${state['combined_cost']:.0f}")
+                                scale_arrow = '▲' if consistent_side == 'Up' else '▼'
+                                print(f"  [{ts2}] {scale_arrow} Scale-in: {consistent_side} | Δ={delta:+.1f} | combined ${state['combined_cost']:.0f}")
 
-            # Past monitoring window — mark done
+            # Past monitoring window — mark trading done, continue observing
             if elapsed > MONITOR_END and not state["done"]:
                 state["done"] = True
                 if not state["entries"]:
                     ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
-                    print(f"  [{ts}] ⏹️  Window closed — no entries")
+                    print(f"  [{ts}] ■  Trading window closed — observing...")
+
+            # Observation mode: disabled for now
+            if False and state["done"] and remaining > 10 and now - state["last_sample"] >= SAMPLE_INTERVAL:
+                state["last_sample"] = now
+                btc, strike, delta = get_quick_delta()
+                if delta is not None:
+                    state["delta_samples"].append((round(elapsed), delta))
+                    ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
+                    n = len(state["delta_samples"])
+                    samples = state["delta_samples"]
+                    recent = [d for _, d in samples[-4:]]
+                    pos_count = sum(1 for d in recent if d > 0)
+                    neg_count = sum(1 for d in recent if d < 0)
+                    consistent_side = None
+                    if pos_count >= 3: consistent_side = "Up"
+                    elif neg_count >= 3: consistent_side = "Down"
+                    side_arrow = ('▲' if consistent_side == 'Up' else '▼') if consistent_side else '○'
+                    
+                    # Every 3rd observation, fetch richer data
+                    extra = ""
+                    obs_count = n - len([s for s in samples if s[0] <= MONITOR_END])
+                    if obs_count % 3 == 1:
+                        try:
+                            obs = get_observation_snapshot()
+                            parts = []
+                            if "ob" in obs: parts.append(f"OB:{obs['ob']}({obs['ob_ratio']})")
+                            if "cvd" in obs: parts.append(f"CVD:{obs['cvd']}({obs['buy_pct']}%buy)")
+                            if "rsi" in obs: parts.append(f"RSI:{obs['rsi']}")
+                            if "15m" in obs: parts.append(f"15m:{obs['15m']}")
+                            if "1h" in obs: parts.append(f"1h:{obs['1h']}")
+                            if "fund" in obs: parts.append(f"F:{obs['fund']}")
+                            extra = " | " + " ".join(parts)
+                        except:
+                            pass
+                    
+                    print(f"  [{ts}] ○ {n}: Δ={delta:+.1f} | {side_arrow} | btc=${btc:,.0f}{extra}")
 
             # Background resolve every 15s
             if now - last_resolve > 15:
@@ -1117,16 +1212,16 @@ def run_loop(dry_run=False, live=False):
                 for old_w in sorted(window_state.keys())[:-10]:
                     del window_state[old_w]
 
-            # Sleep — tight during monitoring, relaxed otherwise
-            if MONITOR_START <= elapsed <= MONITOR_END and not state["done"]:
-                # During monitoring: sleep until next sample
+            # Sleep — tight during monitoring + observation, relaxed otherwise
+            if MONITOR_START <= elapsed and remaining > 10:
+                # During monitoring or observation: sleep until next sample
                 next_sample = state["last_sample"] + SAMPLE_INTERVAL - now
                 time.sleep(max(1, min(5, next_sample)))
             elif elapsed < MONITOR_START:
                 # Before monitoring: sleep until it starts
                 time.sleep(min(10, max(1, MONITOR_START - elapsed)))
             else:
-                # After monitoring: relax until next window
+                # Final seconds: relax until next window
                 time.sleep(min(10, max(1, remaining - 5)))
 
         except KeyboardInterrupt:
