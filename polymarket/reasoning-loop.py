@@ -33,6 +33,7 @@ CHAINLINK_API = "https://data.chain.link/api/query-timescale"
 
 MAX_POSITION = 100.0  # Maximum trade size at 100% conviction
 MIN_EDGE = 0.05       # Minimum edge (conviction - market_price) to trade
+MAX_CONVICTION_RATIO = 1.8  # Max conviction / market_price ratio (sanity check)
 
 TRANCHES = [
     {"id": 1, "trigger_elapsed": 120},
@@ -797,29 +798,36 @@ Be fast."""
                         entry_price = pm.get("up_mid", pm.get("up_best_ask", pm.get("up_price", 0.5)))
                     else:
                         entry_price = pm.get("down_mid", pm.get("down_best_ask", pm.get("down_price", 0.5)))
-                    sized = kelly_size(conv, entry_price)
-                    edge = conv - entry_price
-                    print(f"  [{ts}]    📊 Conviction: {conviction}% | Edge: {edge*100:.1f}% | Kelly size: ${sized:.2f} (max ${MAX_POSITION:.0f})")
+                    # Sanity check: conviction can't be too far from market price
+                    if entry_price > 0 and conv / entry_price > MAX_CONVICTION_RATIO:
+                        print(f"  [{ts}]    ⛔ SANITY CHECK: conviction {conviction}% is {conv/entry_price:.1f}× market price {entry_price:.2f} (max {MAX_CONVICTION_RATIO}×) — likely overconfident, skipping")
+                        decision["action"] = "PASS"
+                        decision["reasoning"] = f"Sanity check: conviction {conv/entry_price:.1f}× market price"
+                        log_pass(brief, decision["reasoning"], "sanity_check")
+                    else:
+                        sized = kelly_size(conv, entry_price)
+                        edge = conv - entry_price
+                        print(f"  [{ts}]    📊 Conviction: {conviction}% | Edge: {edge*100:.1f}% | Kelly size: ${sized:.2f} (max ${MAX_POSITION:.0f})")
 
-                    # Execute trade (paper or live)
-                    trade_cmd_exec = [
-                        trader_python, trader_script,
-                        "--trade", side, str(entry_price),
-                        f"T{tranche_id}/conv[{conviction}]: {reasoning[:80]}",
-                        "--size", str(sized),
-                        "--confidence", str(conviction),
-                        "--delta", str(compact.get('delta_from_strike', 0)),
-                        "--strike", str(compact.get('strike', 0)),
-                        "--momentum", str(compact.get('momentum_alignment', {}).get('score', 0) if isinstance(compact.get('momentum_alignment'), dict) else 0),
-                        "--brief-file", str(brief_file),
-                    ] + (["--live"] if live else [])
-                    try:
-                        trade_result = subprocess.run(trade_cmd_exec, capture_output=True, text=True, timeout=15)
-                        if trade_result.stdout:
-                            for tl in trade_result.stdout.strip().split('\n')[-3:]:
-                                print(f"  [{ts}]    {tl.strip()[:100]}")
-                    except Exception as te:
-                        print(f"  [{ts}] ⚠️  Trade execution error: {te}")
+                        # Execute trade (paper or live)
+                        trade_cmd_exec = [
+                            trader_python, trader_script,
+                            "--trade", side, str(entry_price),
+                            f"T{tranche_id}/conv[{conviction}]: {reasoning[:80]}",
+                            "--size", str(sized),
+                            "--confidence", str(conviction),
+                            "--delta", str(compact.get('delta_from_strike', 0)),
+                            "--strike", str(compact.get('strike', 0)),
+                            "--momentum", str(compact.get('momentum_alignment', {}).get('score', 0) if isinstance(compact.get('momentum_alignment'), dict) else 0),
+                            "--brief-file", str(brief_file),
+                        ] + (["--live"] if live else [])
+                        try:
+                            trade_result = subprocess.run(trade_cmd_exec, capture_output=True, text=True, timeout=15)
+                            if trade_result.stdout:
+                                for tl in trade_result.stdout.strip().split('\n')[-3:]:
+                                    print(f"  [{ts}]    {tl.strip()[:100]}")
+                        except Exception as te:
+                            print(f"  [{ts}] ⚠️  Trade execution error: {te}")
             else:
                 # Fallback: try regex parsing for backwards compatibility
                 full = output.upper()
@@ -934,9 +942,9 @@ def run_loop(dry_run=False, live=False):
                     print(f"  [{ts}] 📈 BTC=${cl:,.2f} | Δ={delta:+.2f} | {remaining:.0f}s left")
 
                     # Pre-filter: skip agent call if delta too small (coin flip territory)
-                    if abs(delta) < 5:
-                        print(f"  [{ts}] ⏭️  |Δ|={abs(delta):.0f} < $5 — no edge, skipping agent call")
-                        log_pass(brief, f"|Δ|={abs(delta):.0f} < $5 — no edge", "pre_filter")
+                    if abs(delta) < 30:
+                        print(f"  [{ts}] ⏭️  |Δ|={abs(delta):.0f} < $30 — no edge, skipping agent call")
+                        log_pass(brief, f"|Δ|={abs(delta):.0f} < $30 — no edge", "pre_filter")
                         continue
 
                     # Skip T2/T3 if earlier tranche in this window is losing
