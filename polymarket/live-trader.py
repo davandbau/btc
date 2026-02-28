@@ -33,8 +33,8 @@ from pathlib import Path
 from urllib.request import urlopen, Request
 
 # ---- Safety Constants ----
-MAX_POSITION_SIZE = 30      # Default max per trade
-ABSOLUTE_MAX_SIZE = 50      # Hard ceiling, cannot be overridden
+MAX_POSITION_SIZE = 100     # Default max per trade
+ABSOLUTE_MAX_SIZE = 100     # Hard ceiling, cannot be overridden
 MAX_DAILY_LOSS = 100        # Stop trading after this much daily loss
 MAX_CONCURRENT = 3          # Max open positions at once
 KILL_SWITCH_FILE = Path.home() / "POLY_KILL"
