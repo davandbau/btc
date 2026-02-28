@@ -40,7 +40,7 @@ MONITOR_START = 60          # Start sampling delta at 60s into window
 MONITOR_END = 200           # Latest possible entry (100s remaining)
 SAMPLE_INTERVAL = 15        # Sample delta every 15s
 MIN_CONSISTENT = 3          # Need 3 of last 4 samples on same side
-MAX_ENTRY_PRICE = 0.75      # Don't buy if price > 0.75
+MAX_ENTRY_PRICE = None       # No cap — Kelly sizing handles edge (no edge = $0 size)
 MAX_ENTRIES_PER_WINDOW = 2  # Primary + one scale-in
 MAX_COMBINED_COST = 100     # Combined cap per window
 SCALE_IN_DELTA_RATIO = 2.0  # Delta must double from first entry to scale in
@@ -916,7 +916,7 @@ def run_loop(dry_run=False, live=False):
     print(f"   {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}")
     print(f"   Mode: {mode_str}")
     print(f"   Monitor: {MONITOR_START}-{MONITOR_END}s | Sample every {SAMPLE_INTERVAL}s")
-    print(f"   Entry: {MIN_CONSISTENT}/4 consistent + |Δ|≥$30 + price≤{MAX_ENTRY_PRICE}")
+    print(f"   Entry: {MIN_CONSISTENT}/4 consistent + |Δ|≥$30 + Kelly sizing (no price cap)")
     print(f"   Max {MAX_ENTRIES_PER_WINDOW} entries/window, ${MAX_COMBINED_COST} combined cap")
     print(f"   Sizing: Kelly Criterion (min edge {MIN_EDGE*100:.0f}%)")
     print(f"{'='*65}\n")
@@ -1034,11 +1034,6 @@ def run_loop(dry_run=False, live=False):
                             else:
                                 entry_price = pm.get("down_mid", pm.get("down_best_ask", pm.get("down_price", 0.5)))
 
-                            if entry_price > MAX_ENTRY_PRICE:
-                                print(f"  [{ts2}] ⏭️  {consistent_side} price {entry_price:.2f} > {MAX_ENTRY_PRICE} — too expensive")
-                                log_pass(brief, f"{consistent_side} price {entry_price:.2f} > {MAX_ENTRY_PRICE}", "price_filter")
-                                continue
-
                             # Trigger agent
                             tranche = {"id": 1}
                             decision = trigger_agent(brief, tranche, state["decisions"], dry_run=dry_run, live=live)
@@ -1088,10 +1083,6 @@ def run_loop(dry_run=False, live=False):
                                 entry_price = pm.get("up_mid", pm.get("up_best_ask", pm.get("up_price", 0.5)))
                             else:
                                 entry_price = pm.get("down_mid", pm.get("down_best_ask", pm.get("down_price", 0.5)))
-
-                            if entry_price > MAX_ENTRY_PRICE:
-                                print(f"  [{ts2}] ⏭️  {consistent_side} price {entry_price:.2f} > {MAX_ENTRY_PRICE}")
-                                continue
 
                             tranche = {"id": 2}
                             decision = trigger_agent(brief, tranche, state["decisions"], dry_run=dry_run, live=live)
