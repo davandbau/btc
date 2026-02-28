@@ -178,14 +178,27 @@ def get_token_for_side(slug, side):
     return None
 
 
-def get_chainlink_price():
+def get_chainlink_price(at_timestamp=None):
+    """Get BTC price from Chainlink. If at_timestamp given, find closest price to that time."""
     try:
         url = f"{CHAINLINK_API}?query=LIVE_STREAM_REPORTS_QUERY&variables=%7B%22feedId%22%3A%22{CHAINLINK_FEED}%22%7D"
         data = fetch_json(url, timeout=5)
         if data and "data" in data:
             nodes = data["data"].get("liveStreamReports", {}).get("nodes", [])
-            if nodes:
+            if not nodes:
+                return None
+            if at_timestamp is None:
                 return float(nodes[0]["price"]) / 1e18
+            # Find price closest to target timestamp
+            best_price = None
+            best_dist = float("inf")
+            for n in nodes:
+                ts = datetime.fromisoformat(n["validFromTimestamp"].replace("Z", "+00:00")).timestamp()
+                dist = abs(ts - at_timestamp)
+                if dist < best_dist:
+                    best_dist = dist
+                    best_price = float(n["price"]) / 1e18
+            return best_price
     except:
         pass
     return None
@@ -368,8 +381,9 @@ def resolve_all():
             except:
                 pass
 
-        # Get settlement price from Chainlink
-        btc_at_settlement = get_chainlink_price()
+        # Get settlement price from Chainlink at window close time
+        window_end_ts = window_ts + 300 if window_ts else None
+        btc_at_settlement = get_chainlink_price(at_timestamp=window_end_ts)
         strike = pos.get("strike_price", 0)
 
         if btc_at_settlement and strike:
