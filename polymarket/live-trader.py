@@ -291,7 +291,17 @@ def record_trade(side, entry_price, reasoning, position_size=MAX_POSITION_SIZE,
             print(f"📡 Placing LIVE order: {side} @ {entry_price} for ${position_size}")
             response = place_order(client, token, side, entry_price, position_size)
             trade["order_response"] = response
-            print(f"✅ Order response: {json.dumps(response, indent=2)}")
+            # Update cost/shares with actual fill from CLOB
+            if response.get("success") and response.get("makingAmount"):
+                actual_usdc = float(response["makingAmount"])
+                actual_shares = float(response.get("takingAmount", shares))
+                trade["cost_intended"] = trade["cost"]  # keep original for reference
+                trade["cost"] = round(actual_usdc, 6)
+                trade["shares"] = round(actual_shares, 4)
+                trade["fee"] = round(calc_fee(actual_shares, entry_price), 6)
+                print(f"✅ Filled: ${actual_usdc:.2f} USDC for {actual_shares:.1f} shares (intended ${position_size:.2f})")
+            else:
+                print(f"✅ Order response: {json.dumps(response, indent=2)}")
             log_trade({"action": "ORDER_PLACED", "response": response, "slug": slug})
         except Exception as e:
             print(f"❌ Order FAILED: {e}")
