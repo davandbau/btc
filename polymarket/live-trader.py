@@ -197,9 +197,9 @@ def calc_fee(shares, price):
     return max(0, potential_profit * 0.02)
 
 
-def place_order(client, token_id, side, price, size, order_type="FOK"):
+def place_order(client, token_id, side, price, size):
     """Place a real order on the CLOB. Returns order response."""
-    from py_clob_client.clob_types import OrderArgs, OrderType
+    from py_clob_client.clob_types import OrderArgs, PartialCreateOrderOptions
     from py_clob_client.order_builder.constants import BUY
 
     # For binary markets, we always BUY the token
@@ -212,11 +212,10 @@ def place_order(client, token_id, side, price, size, order_type="FOK"):
             size=round(size / price, 2),  # shares = dollars / price
             side=BUY,
         ),
-        options={
-            "tick_size": "0.01",
-            "neg_risk": False,
-        },
-        order_type=OrderType.FOK,  # Fill-or-kill: execute immediately or cancel
+        options=PartialCreateOrderOptions(
+            tick_size="0.01",
+            neg_risk=False,
+        ),
     )
     return response
 
