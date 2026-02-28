@@ -608,11 +608,18 @@ def build_brief():
 
 # ---- Agent Interaction ----
 
-def trigger_agent(brief, tranche, prior_decisions, dry_run=False):
+def trigger_agent(brief, tranche, prior_decisions, dry_run=False, live=False):
     """Spawn an OpenClaw agent to make a trade decision."""
     tranche_id = tranche["id"]
     base_size = MAX_POSITION  # for display only
-    trade_cmd = f"python3 {BOT_DIR / 'reasoning-trader.py'}"
+    if live:
+        trade_cmd = f"python3.12 {BOT_DIR / 'live-trader.py'}"
+        trader_script = str(BOT_DIR / "live-trader.py")
+        trader_python = "python3.12"
+    else:
+        trade_cmd = f"python3 {BOT_DIR / 'reasoning-trader.py'}"
+        trader_script = str(BOT_DIR / "reasoning-trader.py")
+        trader_python = "python3"
 
     # Save brief snapshot for post-hoc analysis
     briefs_dir = BOT_DIR / "briefs"
@@ -712,7 +719,7 @@ POSITION SIZING — Kelly Criterion:
   
   Examples at entry=0.50: conv=60% → $20, conv=70% → $40, conv=80% → $60, conv=90% → $80
 
-This is paper trading — we WANT data. Trade when you see edge (>5%). Don't wait for certainty.
+Trade when you see edge (>5%). Don't wait for certainty. Be selective — only trade high-conviction setups.
 
 RESPOND WITH ONLY A JSON OBJECT — no markdown, no explanation, no code blocks. Just raw JSON.
 
@@ -794,9 +801,9 @@ Be fast."""
                     edge = conv - entry_price
                     print(f"  [{ts}]    📊 Conviction: {conviction}% | Edge: {edge*100:.1f}% | Kelly size: ${sized:.2f} (max ${MAX_POSITION:.0f})")
 
-                    # Execute paper trade
+                    # Execute trade (paper or live)
                     trade_cmd_exec = [
-                        "python3", str(BOT_DIR / "reasoning-trader.py"),
+                        trader_python, trader_script,
                         "--trade", side, str(entry_price),
                         f"T{tranche_id}/conv[{conviction}]: {reasoning[:80]}",
                         "--size", str(sized),
@@ -805,7 +812,7 @@ Be fast."""
                         "--strike", str(compact.get('strike', 0)),
                         "--momentum", str(compact.get('momentum_alignment', {}).get('score', 0) if isinstance(compact.get('momentum_alignment'), dict) else 0),
                         "--brief-file", str(brief_file),
-                    ]
+                    ] + (["--live"] if live else [])
                     try:
                         trade_result = subprocess.run(trade_cmd_exec, capture_output=True, text=True, timeout=15)
                         if trade_result.stdout:
@@ -852,11 +859,17 @@ Be fast."""
 
 # ---- Main Loop ----
 
-def run_loop(dry_run=False):
+def run_loop(dry_run=False, live=False):
+    if live:
+        mode_str = "🔴 LIVE TRADING"
+    elif dry_run:
+        mode_str = "DRY RUN"
+    else:
+        mode_str = "PAPER TRADING"
     print(f"{'='*65}")
     print(f"🧠 Polymarket 5-Min BTC Reasoning Loop — Tranched Entry")
     print(f"   {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}")
-    print(f"   Mode: {'DRY RUN' if dry_run else 'PAPER TRADING'}")
+    print(f"   Mode: {mode_str}")
     print(f"   Single tranche: T1@120s — max ${MAX_POSITION:.0f}")
     print(f"   Sizing: Kelly Criterion (conviction 0-100%, min edge {MIN_EDGE*100:.0f}%)")
     print(f"{'='*65}\n")
@@ -940,7 +953,7 @@ def run_loop(dry_run=False):
                                 log_pass(brief, f"T{tid} earlier {last_side} underwater (Δ={delta:+.0f})", "underwater")
                                 continue
 
-                    decision = trigger_agent(brief, tranche, state["decisions"], dry_run=dry_run)
+                    decision = trigger_agent(brief, tranche, state["decisions"], dry_run=dry_run, live=live)
                     state["decisions"].append(decision)
                     if decision.get("action") == "PASS":
                         log_pass(brief, decision.get("reasoning", "agent PASS"), "agent")
@@ -949,8 +962,11 @@ def run_loop(dry_run=False):
             if now - last_resolve > 15:
                 last_resolve = now
                 try:
-                    trade_cmd = str(BOT_DIR / "reasoning-trader.py")
-                    subprocess.run(["python3", trade_cmd, "--resolve"], capture_output=True, text=True, timeout=15)
+                    if live:
+                        resolve_cmd = ["python3.12", str(BOT_DIR / "live-trader.py"), "--resolve"]
+                    else:
+                        resolve_cmd = ["python3", str(BOT_DIR / "reasoning-trader.py"), "--resolve"]
+                    subprocess.run(resolve_cmd, capture_output=True, text=True, timeout=15)
                 except Exception:
                     pass
 
@@ -989,5 +1005,6 @@ def run_loop(dry_run=False):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Polymarket Reasoning Loop — Tranched")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--live", action="store_true", help="Execute real trades via live-trader.py")
     args = parser.parse_args()
-    run_loop(dry_run=args.dry_run)
+    run_loop(dry_run=args.dry_run, live=args.live)
