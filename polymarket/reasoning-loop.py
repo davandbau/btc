@@ -714,16 +714,15 @@ POSITION SIZING — Kelly Criterion:
 
 This is paper trading — we WANT data. Trade when you see edge (>5%). Don't wait for certainty.
 
-IF TRADING, respond with EXACTLY this format on the FIRST line, then run the command:
-TRADE [UP/DOWN] [CONVICTION 0-100] [PRICE]
+RESPOND WITH ONLY A JSON OBJECT — no markdown, no explanation, no code blocks. Just raw JSON.
 
-Then execute:
-```
-{trade_cmd} --trade "SIDE" "PRICE" "T{tranche_id}/conv[XX]: reasoning" --size SIZE --confidence XX --delta {compact.get('delta_from_strike', 0)} --strike {compact.get('strike', 0)} --momentum {compact.get('momentum_alignment', {}).get('score', 0) if isinstance(compact.get('momentum_alignment'), dict) else 0} --brief-file "{brief_file}"
-```
-Where SIDE is Up or Down, PRICE is the entry price from the brief, SIZE is computed by you using the Kelly formula above, XX is your conviction 0-100, and reasoning explains why.
+If trading:
+{{"action": "Up" or "Down", "conviction": 0-100, "reasoning": "brief explanation"}}
 
-IF PASSING: respond with EXACTLY: PASS [CONVICTION 0] — reason
+If passing:
+{{"action": "PASS", "conviction": 0, "reasoning": "why you passed"}}
+
+The system will handle position sizing (Kelly) and trade execution automatically.
 
 First resolve open positions:
 ```
@@ -748,42 +747,91 @@ Be fast."""
                 if line.strip():
                     print(f"  [{ts}]    {line.strip()[:100]}")
 
-            # Parse decision and conviction from output
-            full = output.upper()
+            # Parse JSON response from agent
+            clean = output.strip()
+            clean = re.sub(r'```json\s*', '', clean)
+            clean = re.sub(r'```\s*', '', clean)
+            clean = clean.strip()
+            json_obj = None
+            try:
+                json_obj = json.loads(clean)
+            except json.JSONDecodeError:
+                start = clean.find('{')
+                end = clean.rfind('}')
+                if start >= 0 and end > start:
+                    try:
+                        json_obj = json.loads(clean[start:end+1])
+                    except json.JSONDecodeError:
+                        pass
 
-            # Extract conviction (0-100)
-            conv_match = re.search(r'CONVICTION\s+(\d+)', full)
-            if conv_match:
-                decision["conviction"] = int(conv_match.group(1))
+            if json_obj and isinstance(json_obj, dict):
+                action = json_obj.get("action", "").upper()
+                conviction = int(json_obj.get("conviction", 0))
+                reasoning = json_obj.get("reasoning", "")[:150]
 
-            if "PASS" in full:
-                decision["action"] = "PASS"
-                decision["conviction"] = decision.get("conviction", 0)
-                decision["reasoning"] = output.strip()[-100:]
-            elif "TRADE" in full and "UP" in full and "DOWN" not in full.split("TRADE")[1][:20]:
-                decision["action"] = "BUY_UP"
-                decision["reasoning"] = output.strip()[-100:]
-            elif "TRADE" in full and "DOWN" in full:
-                decision["action"] = "BUY_DOWN"
-                decision["reasoning"] = output.strip()[-100:]
-            elif "--TRADE" in full:
-                if '"UP"' in full:
+                decision["conviction"] = conviction
+                decision["reasoning"] = reasoning
+
+                if action == "PASS":
+                    decision["action"] = "PASS"
+                elif action == "UP":
                     decision["action"] = "BUY_UP"
-                elif '"DOWN"' in full:
+                elif action == "DOWN":
                     decision["action"] = "BUY_DOWN"
-                decision["reasoning"] = output.strip()[-100:]
+                else:
+                    decision["action"] = "UNKNOWN"
+                    print(f"  [{ts}] ⚠️  Unknown action in JSON: {action}")
 
-            # Log conviction and Kelly-sized position
-            conv = decision.get("conviction", 50) / 100.0
-            pm = brief.get("polymarket", {})
-            if decision.get("action") == "BUY_UP":
-                entry_price = pm.get("up_mid", pm.get("up_best_ask", pm.get("up_price", 0.5)))
+                if decision["action"] in ("BUY_UP", "BUY_DOWN"):
+                    side = "Up" if decision["action"] == "BUY_UP" else "Down"
+                    conv = conviction / 100.0
+                    pm = brief.get("polymarket", {})
+                    if side == "Up":
+                        entry_price = pm.get("up_mid", pm.get("up_best_ask", pm.get("up_price", 0.5)))
+                    else:
+                        entry_price = pm.get("down_mid", pm.get("down_best_ask", pm.get("down_price", 0.5)))
+                    sized = kelly_size(conv, entry_price)
+                    edge = conv - entry_price
+                    print(f"  [{ts}]    📊 Conviction: {conviction}% | Edge: {edge*100:.1f}% | Kelly size: ${sized:.2f} (max ${MAX_POSITION:.0f})")
+
+                    # Execute paper trade
+                    trade_cmd_exec = [
+                        "python3", str(BOT_DIR / "reasoning-trader.py"),
+                        "--trade", side, str(entry_price),
+                        f"T{tranche_id}/conv[{conviction}]: {reasoning[:80]}",
+                        "--size", str(sized),
+                        "--confidence", str(conviction),
+                        "--delta", str(compact.get('delta_from_strike', 0)),
+                        "--strike", str(compact.get('strike', 0)),
+                        "--momentum", str(compact.get('momentum_alignment', {}).get('score', 0) if isinstance(compact.get('momentum_alignment'), dict) else 0),
+                        "--brief-file", str(brief_file),
+                    ]
+                    try:
+                        trade_result = subprocess.run(trade_cmd_exec, capture_output=True, text=True, timeout=15)
+                        if trade_result.stdout:
+                            for tl in trade_result.stdout.strip().split('\n')[-3:]:
+                                print(f"  [{ts}]    {tl.strip()[:100]}")
+                    except Exception as te:
+                        print(f"  [{ts}] ⚠️  Trade execution error: {te}")
             else:
-                entry_price = pm.get("down_mid", pm.get("down_best_ask", pm.get("down_price", 0.5)))
-            sized = kelly_size(conv, entry_price)
-            if decision["action"] not in ("PASS", "UNKNOWN"):
-                edge = conv - entry_price
-                print(f"  [{ts}]    📊 Conviction: {decision.get('conviction',0)}% | Edge: {edge*100:.1f}% | Kelly size: ${sized:.2f} (max ${MAX_POSITION:.0f})")
+                # Fallback: try regex parsing for backwards compatibility
+                full = output.upper()
+                conv_match = re.search(r'CONVICTION\s+(\d+)', full)
+                if conv_match:
+                    decision["conviction"] = int(conv_match.group(1))
+
+                if "PASS" in full:
+                    decision["action"] = "PASS"
+                    decision["conviction"] = decision.get("conviction", 0)
+                    decision["reasoning"] = output.strip()[-100:]
+                elif "TRADE" in full and "UP" in full and "DOWN" not in full.split("TRADE")[1][:20]:
+                    decision["action"] = "BUY_UP"
+                    decision["reasoning"] = output.strip()[-100:]
+                elif "TRADE" in full and "DOWN" in full:
+                    decision["action"] = "BUY_DOWN"
+                    decision["reasoning"] = output.strip()[-100:]
+
+                print(f"  [{ts}] ⚠️  JSON parse failed, used regex fallback: {decision['action']}")
 
         if result.returncode != 0 and result.stderr:
             print(f"  [{ts}] ⚠️  Agent error: {result.stderr[:200]}")
