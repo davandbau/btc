@@ -248,6 +248,7 @@ HTML_PAGE = """<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Polymarket Trading Desk</title>
+<link href="https://api.fontshare.com/v2/css?f[]=satoshi@300,400,500,600,700&display=swap" rel="stylesheet">
 <style>
 :root {
     --bg: #0d1117; --surface: #161b22; --border: #30363d;
@@ -255,7 +256,7 @@ HTML_PAGE = """<!DOCTYPE html>
     --yellow: #d29922; --blue: #58a6ff; --orange: #db6d28; --purple: #bc8cff;
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); padding: 12px; }
+body { font-family: 'Satoshi', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-feature-settings: 'tnum' 1; background: var(--bg); color: var(--text); padding: 12px; }
 h1 { font-size: 20px; font-weight: 600; margin-bottom: 2px; }
 .subtitle { color: var(--muted); font-size: 13px; margin-bottom: 16px; }
 .live-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--green); margin-right: 4px; animation: pulse 2s infinite; }

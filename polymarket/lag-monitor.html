@@ -5,44 +5,45 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>BTC Price Lag Monitor</title>
 <style>
+  @import url('https://api.fontshare.com/v2/css?f[]=satoshi@300,400,500,600,700&display=swap');
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { background: #0a0a0a; color: #e0e0e0; font-family: 'SF Mono', 'Fira Code', monospace; }
+  body { background: #0a0a0a; color: #e0e0e0; font-family: 'Satoshi', sans-serif; font-feature-settings: 'tnum' 1; }
   .container { max-width: 1100px; margin: 0 auto; padding: 20px; }
-  h1 { font-size: 14px; color: #666; text-transform: uppercase; letter-spacing: 2px; margin-bottom: 20px; text-align: center; }
+  h1 { font-size: 14px; color: #888; text-transform: uppercase; letter-spacing: 2px; margin-bottom: 20px; text-align: center; }
 
   .prices { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-bottom: 12px; }
-  .panel { background: #111; border: 1px solid #222; border-radius: 8px; padding: 16px; }
-  .panel-label { font-size: 10px; color: #555; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px; }
-  .price { font-size: 28px; font-weight: 700; letter-spacing: -1px; }
-  .sub { font-size: 11px; color: #444; margin-top: 4px; }
+  .panel { background: #111; border: 1px solid #2a2a2a; border-radius: 8px; padding: 16px; }
+  .panel-label { font-size: 10px; color: #777; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px; }
+  .price { font-size: 28px; font-weight: 500; letter-spacing: -0.3px; }
+  .sub { font-size: 11px; color: #888; margin-top: 4px; }
   .binance .price { color: #f0b90b; }
   .chainlink .price { color: #375bd2; }
   .polymarket .price { color: #ff6b00; }
 
   .exchanges { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 12px; }
-  .ex { background: #111; border: 1px solid #1a1a1a; border-radius: 6px; padding: 10px; }
-  .ex-name { font-size: 9px; color: #555; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px; }
-  .ex-price { font-size: 16px; font-weight: 600; color: #888; }
-  .ex-lag { font-size: 10px; color: #555; margin-top: 2px; }
+  .ex { background: #111; border: 1px solid #252525; border-radius: 6px; padding: 10px; }
+  .ex-name { font-size: 9px; color: #777; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px; }
+  .ex-price { font-size: 16px; font-weight: 500; color: #ddd; }
+  .ex-lag { font-size: 10px; color: #777; margin-top: 2px; }
 
-  .lag-bar { background: #111; border: 1px solid #222; border-radius: 8px; padding: 16px; text-align: center; margin-bottom: 12px; }
-  .lag-label { font-size: 10px; color: #555; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px; }
-  .lag-value { font-size: 42px; font-weight: 700; }
-  .lag-unit { font-size: 12px; color: #555; margin-left: 4px; }
-  .lag-desc { font-size: 12px; margin-top: 6px; color: #555; }
+  .lag-bar { background: #111; border: 1px solid #2a2a2a; border-radius: 8px; padding: 16px; text-align: center; margin-bottom: 12px; }
+  .lag-label { font-size: 10px; color: #777; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px; }
+  .lag-value { font-size: 42px; font-weight: 500; }
+  .lag-unit { font-size: 12px; color: #777; margin-left: 4px; }
+  .lag-desc { font-size: 12px; margin-top: 6px; color: #777; }
 
   .bottom { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
-  .info-box { background: #111; border: 1px solid #222; border-radius: 8px; padding: 14px; }
+  .info-box { background: #111; border: 1px solid #2a2a2a; border-radius: 8px; padding: 14px; }
   .info-row { display: flex; justify-content: space-between; align-items: center; padding: 3px 0; }
-  .info-label { font-size: 11px; color: #555; }
-  .info-value { font-size: 13px; font-weight: 600; }
+  .info-label { font-size: 11px; color: #777; }
+  .info-value { font-size: 13px; font-weight: 400; }
   .green { color: #22c55e; }
   .red { color: #ef4444; }
 
-  .ticker { background: #111; border: 1px solid #222; border-radius: 8px; padding: 10px 16px; max-height: 150px; overflow-y: auto; }
-  .ticker-row { font-size: 10px; color: #444; padding: 2px 0; display: flex; gap: 10px; }
-  .ticker-row .time { color: #333; min-width: 85px; }
-  .ticker-row .evt { color: #555; }
+  .ticker { background: #111; border: 1px solid #2a2a2a; border-radius: 8px; padding: 10px 16px; max-height: 150px; overflow-y: auto; }
+  .ticker-row { font-size: 10px; color: #888; padding: 2px 0; display: flex; gap: 10px; }
+  .ticker-row .time { color: #555; min-width: 85px; }
+  .ticker-row .evt { color: #777; }
   .ticker-row.arb .evt { color: #22c55e; font-weight: 600; }
   .ticker-row.lag .evt { color: #f0b90b; }
 
@@ -50,7 +51,7 @@
   .dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 3px; vertical-align: middle; }
   .dot.on { background: #22c55e; }
   .dot.off { background: #ef4444; }
-  .status span { font-size: 10px; color: #444; }
+  .status span { font-size: 10px; color: #888; }
 </style>
 </head>
 <body>
