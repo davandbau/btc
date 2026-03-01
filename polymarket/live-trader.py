@@ -42,7 +42,7 @@ KILL_SWITCH_FILE = Path.home() / "POLY_KILL"
 # ---- Paths ----
 SCRIPT_DIR = Path(__file__).parent
 CREDS_FILE = Path.home() / ".openclaw/workspace/.polymarket-creds.json"
-LEDGER_FILE = SCRIPT_DIR / "ledgers" / "live.json"
+LEDGER_FILE = SCRIPT_DIR / "ledgers" / "reasoning.json"
 DAILY_LOG_DIR = SCRIPT_DIR / "live-logs"
 
 # ---- API ----

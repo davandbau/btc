@@ -78,8 +78,62 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.proxy_chainlink()
         elif self.path.startswith('/api/pm-price'):
             self.serve_pm_price()
+        elif self.path == '/api/futures-live':
+            self.serve_futures_live()
+        elif self.path.startswith('/api/futures'):
+            self.serve_futures()
         else:
             super().do_GET()
+    def serve_futures_live(self):
+        """Serve live futures state (liqs, spread) from shadow's JSON file."""
+        try:
+            live_path = os.path.join(DIR, "logs", "futures-live.json")
+            if os.path.exists(live_path):
+                data = open(live_path).read()
+            else:
+                data = '{"error":"no data yet"}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(data.encode())
+        except Exception as e:
+            self.send_response(500)
+            self.end_headers()
+            self.wfile.write(f'{{"error":"{e}"}}'.encode())
+
+    def serve_futures(self):
+        """Serve latest futures shadow data (last 5 windows + live stats)."""
+        try:
+            jsonl_path = os.path.join(DIR, "logs", "futures-shadow.jsonl")
+            lines = []
+            if os.path.exists(jsonl_path):
+                with open(jsonl_path) as f:
+                    lines = f.readlines()
+            recent = [json.loads(l) for l in lines[-12:]]  # last hour
+            # Summary stats
+            scored = [r for r in recent if r.get("spread_correct") is not None]
+            liq_scored = [r for r in recent if r.get("liq_correct") is not None]
+            payload = {
+                "windows": recent[-5:],
+                "spread_accuracy": round(sum(1 for r in scored if r["spread_correct"]) / len(scored) * 100, 1) if scored else None,
+                "liq_accuracy": round(sum(1 for r in liq_scored if r["liq_correct"]) / len(liq_scored) * 100, 1) if liq_scored else None,
+                "total_windows": len(recent),
+                "latest": recent[-1] if recent else None,
+                "updated": time.time(),
+            }
+            data = json.dumps(payload)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(data.encode())
+        except Exception as e:
+            self.send_response(500)
+            self.end_headers()
+            self.wfile.write(f'{{"error":"{e}"}}'.encode())
     def serve_pm_price(self):
         try:
             pm_file = os.path.join(DIR, "pm-live-price.json")

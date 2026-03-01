@@ -11,22 +11,22 @@
   .container { max-width: 1100px; margin: 0 auto; padding: 20px; }
   h1 { font-size: 14px; color: #888; text-transform: uppercase; letter-spacing: 2px; margin-bottom: 20px; text-align: center; }
 
-  .prices { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-bottom: 12px; }
-  .panel { background: #111; border: 1px solid #2a2a2a; border-radius: 8px; padding: 16px; }
-  .panel-label { font-size: 10px; color: #777; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px; }
+  .prices { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+  .panel { background: #111; border: 1px solid #2a2a2a; border-radius: 8px; padding: 20px; }
+  .panel-label { font-size: 10px; color: #777; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
   .price { font-size: 28px; font-weight: 500; letter-spacing: -0.3px; }
   .sub { font-size: 11px; color: #888; margin-top: 4px; }
   .binance .price { color: #f0b90b; }
   .chainlink .price { color: #375bd2; }
   .polymarket .price { color: #ff6b00; }
 
-  .exchanges { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 12px; }
-  .ex { background: #111; border: 1px solid #252525; border-radius: 6px; padding: 10px; }
+  .exchanges { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
+  .ex { background: #111; border: 1px solid #252525; border-radius: 6px; padding: 12px; }
   .ex-name { font-size: 9px; color: #777; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px; }
   .ex-price { font-size: 16px; font-weight: 500; color: #ddd; }
   .ex-lag { font-size: 10px; color: #777; margin-top: 2px; }
 
-  .lag-bar { background: #111; border: 1px solid #2a2a2a; border-radius: 8px; padding: 16px; text-align: center; margin-bottom: 12px; }
+  .lag-bar { background: #111; border: 1px solid #2a2a2a; border-radius: 8px; padding: 20px; text-align: center; margin-bottom: 16px; }
   .lag-label { font-size: 10px; color: #777; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px; }
   .lag-value { font-size: 42px; font-weight: 500; }
   .lag-unit { font-size: 12px; color: #777; margin-left: 4px; }
@@ -65,12 +65,12 @@
       <div class="sub" id="bin-sub">connecting...</div>
     </div>
     <div class="panel chainlink">
-      <div class="panel-label">Chainlink BTC/USD (settlement oracle)</div>
+      <div class="panel-label">Chainlink BTC/USD</div>
       <div class="price" id="cl-price">—</div>
       <div class="sub" id="cl-sub">loading...</div>
     </div>
     <div class="panel polymarket">
-      <div class="panel-label">Polymarket / Chainlink (retail sees this)</div>
+      <div class="panel-label">Polymarket / Chainlink</div>
       <div class="price" id="pm-price">—</div>
       <div class="sub" id="pm-sub">connecting...</div>
     </div>
@@ -108,45 +108,40 @@
     <div class="lag-desc" id="lag-desc">waiting for both feeds</div>
   </div>
 
-  <div class="bottom">
-    <div class="info-box">
-      <div class="panel-label" style="margin-bottom:6px">Polymarket Book</div>
-      <div class="info-row">
-        <span class="info-label">UP ask</span>
-        <span class="info-value" id="up-ask">—</span>
+  <div class="prices" style="grid-template-columns: 1fr 1fr; margin-bottom:16px;">
+    <div class="panel" style="border-color:#f0b90b33;">
+      <div class="panel-label">Binance BTC Perp (futures)</div>
+      <div class="price" id="fut-price" style="color:#f0b90b;">—</div>
+      <div class="sub" id="fut-sub">connecting...</div>
+    </div>
+    <div class="panel" id="spread-panel">
+      <div class="panel-label">Futures → Spot Spread</div>
+      <div class="price" id="fut-spread" style="font-size:32px;">—</div>
+      <div class="sub" id="spread-direction" style="line-height:1.6;">waiting for both feeds</div>
+    </div>
+  </div>
+
+  <div class="lag-bar" id="liq-bar" style="text-align:left; padding:20px;">
+    <div class="lag-label" style="margin-bottom:12px;">Live Liquidations</div>
+    <div style="display:grid; grid-template-columns:1fr 1fr 1fr 1fr; gap:16px; margin-bottom:14px;">
+      <div>
+        <div style="font-size:10px;color:#777;margin-bottom:4px;">Window Longs Liq'd</div>
+        <div style="font-size:22px;font-weight:500;" class="red" id="liq-long">$0</div>
       </div>
-      <div class="info-row">
-        <span class="info-label">DOWN ask</span>
-        <span class="info-value" id="down-ask">—</span>
+      <div>
+        <div style="font-size:10px;color:#777;margin-bottom:4px;">Window Shorts Liq'd</div>
+        <div style="font-size:22px;font-weight:500;" class="green" id="liq-short">$0</div>
       </div>
-      <div class="info-row">
-        <span class="info-label">Combined</span>
-        <span class="info-value" id="combined">—</span>
+      <div>
+        <div style="font-size:10px;color:#777;margin-bottom:4px;">Net Pressure</div>
+        <div style="font-size:22px;font-weight:500;" id="liq-net">—</div>
       </div>
-      <div class="info-row">
-        <span class="info-label">Arb</span>
-        <span class="info-value" id="arb-status">—</span>
+      <div>
+        <div style="font-size:10px;color:#777;margin-bottom:4px;">Funding Rate</div>
+        <div style="font-size:22px;font-weight:500;" id="fut-funding">—</div>
       </div>
     </div>
-    <div class="info-box">
-      <div class="panel-label" style="margin-bottom:6px">Window Stats</div>
-      <div class="info-row">
-        <span class="info-label">Strike</span>
-        <span class="info-value" id="strike-price">—</span>
-      </div>
-      <div class="info-row">
-        <span class="info-label">Avg vs strike</span>
-        <span class="info-value" id="strike-delta">—</span>
-      </div>
-      <div class="info-row">
-        <span class="info-label">Max lag (Avg→PM)</span>
-        <span class="info-value" id="max-lag">—</span>
-      </div>
-      <div class="info-row">
-        <span class="info-label">Avg lag (Avg→PM)</span>
-        <span class="info-value" id="avg-lag">—</span>
-      </div>
-    </div>
+    <div id="liq-feed" style="font-size:10px; color:#888; max-height:100px; overflow-y:auto; line-height:1.6;"></div>
   </div>
 
   <div class="ticker" id="ticker"></div>
@@ -159,7 +154,7 @@
     <span><span class="dot" id="bb-dot"></span> Bybit</span>
     <span><span class="dot" id="cl-dot"></span> Chainlink</span>
     <span><span class="dot" id="pm-dot"></span> Polymarket</span>
-    <span><span class="dot" id="book-dot"></span> CLOB Book</span>
+    <span><span class="dot" id="fut-dot"></span> Futures Feed</span>
   </div>
 </div>
 
@@ -274,26 +269,149 @@ async function pollTokens(){
   }catch(e){}
 }
 
-// ─── CLOB Book ───
-async function pollBook(){
-  if(!upTokenId||!downTokenId)return;
-  try{
-    const[ub,db]=await Promise.all([
-      fetch(`https://clob.polymarket.com/book?token_id=${upTokenId}`).then(r=>r.json()),
-      fetch(`https://clob.polymarket.com/book?token_id=${downTokenId}`).then(r=>r.json()),
-    ]);
-    const ua=ub.asks?.length?parseFloat(ub.asks.sort((a,b)=>a.price-b.price)[0].price):null;
-    const da=db.asks?.length?parseFloat(db.asks.sort((a,b)=>a.price-b.price)[0].price):null;
-    $('up-ask').textContent=ua!=null?(ua*100).toFixed(1)+'¢':'—';
-    $('down-ask').textContent=da!=null?(da*100).toFixed(1)+'¢':'—';
-    $('book-dot').className='dot on';
-    if(ua!=null&&da!=null){
-      const c=ua+da;
-      $('combined').textContent=c.toFixed(4);
-      if(c<1){$('arb-status').textContent=`YES +${(1-c).toFixed(4)}`;$('arb-status').className='info-value green';addTick(`ARB: ${ua}+${da}=${c.toFixed(4)}`,'arb');}
-      else{$('arb-status').textContent=`NO +${(c-1).toFixed(4)}`;$('arb-status').className='info-value red';}
+// ─── Binance Futures (websocket) ───
+let futPrice=null;
+let windowLongLiq=0, windowShortLiq=0, liqFeed=[];
+let lastWindowReset=Math.floor(Date.now()/300000)*300000;
+let spreadHistory=[];  // {ts, spread} for trend tracking
+let spreadBaseline=null;  // rolling 60s baseline
+
+function resetWindowLiqs(){
+  const now=Math.floor(Date.now()/300000)*300000;
+  if(now!==lastWindowReset){windowLongLiq=0;windowShortLiq=0;lastWindowReset=now;}
+}
+
+function connectBinanceFutures(){
+  const ws=new WebSocket('wss://fstream.binance.com/ws/btcusdt@aggTrade');
+  ws.onopen=()=>{$('fut-dot').className='dot on';addTick('Binance Futures connected');};
+  ws.onclose=()=>{$('fut-dot').className='dot off';setTimeout(connectBinanceFutures,2000);};
+  ws.onerror=()=>ws.close();
+  ws.onmessage=(e)=>{
+    try{
+      const d=JSON.parse(e.data);
+      futPrice=parseFloat(d.p);
+      $('fut-price').textContent=fmt(futPrice);
+      $('fut-sub').textContent=ts();
+      updateSpread();
+    }catch(ex){}
+  };
+}
+
+function updateSpread(){
+  if(!futPrice||!binPrice)return;
+  const spread=futPrice-binPrice;
+  const now=Date.now();
+  spreadHistory.push({ts:now,spread});
+  while(spreadHistory.length>0&&(now-spreadHistory[0].ts)>180000)spreadHistory.shift();
+
+  // Set baseline from first 30s of data, then rolling 60s avg
+  if(spreadHistory.length>10){
+    const oldSamples=spreadHistory.filter(s=>(now-s.ts)>30000&&(now-s.ts)<90000);
+    if(oldSamples.length>5){
+      spreadBaseline=oldSamples.reduce((a,s)=>a+s.spread,0)/oldSamples.length;
+    }else if(!spreadBaseline){
+      spreadBaseline=spreadHistory.slice(0,10).reduce((a,s)=>a+s.spread,0)/10;
     }
-  }catch(e){$('book-dot').className='dot off';}
+  }
+
+  // Show relative change from baseline
+  const delta=spreadBaseline!=null?spread-spreadBaseline:0;
+  const absDelta=Math.abs(delta);
+
+  $('fut-spread').textContent=(delta>=0?'+':'')+delta.toFixed(2);
+
+  let label, color;
+  if(absDelta<2){
+    label=`Flat (base: ${spread.toFixed(0)})`;color='#555';
+  }else if(delta>0){
+    label=`Spread widening → Bullish shift ▲`;color='#22c55e';
+  }else{
+    label=`Spread narrowing → Bearish shift ▼`;color='#ef4444';
+  }
+  $('fut-spread').style.color=color;
+  $('spread-direction').innerHTML=`<span style="color:${color}">${label}</span>`;
+}
+
+// ─── Bybit Liquidations (websocket) ───
+function connectBybitLiqs(){
+  const ws=new WebSocket('wss://stream.bybit.com/v5/public/linear');
+  ws.onopen=()=>{
+    ws.send(JSON.stringify({op:'subscribe',args:['allLiquidation.BTCUSDT']}));
+    addTick('Bybit liquidations connected');
+  };
+  ws.onclose=()=>{setTimeout(connectBybitLiqs,3000);};
+  ws.onerror=()=>ws.close();
+  ws.onmessage=(e)=>{
+    try{
+      const d=JSON.parse(e.data);
+      if(d.topic==='allLiquidation.BTCUSDT'&&d.data){
+        resetWindowLiqs();
+        for(const liq of d.data){
+          const side=liq.S;  // "Buy" = long liq'd, "Sell" = short liq'd
+          const size=parseFloat(liq.v||0);
+          const price=parseFloat(liq.p||0);
+          const usd=size*price;
+          const dir=side==='Buy'?'LONG':'SHORT';
+          if(dir==='LONG'){windowLongLiq+=usd;}else{windowShortLiq+=usd;}
+          const emoji=dir==='LONG'?'🔻':'🔺';
+          const entry={time:ts(),text:`${emoji} ${dir} liq $${(usd/1000).toFixed(1)}K @ ${fmt(price)}`};
+          liqFeed.unshift(entry);if(liqFeed.length>20)liqFeed.pop();
+          if(usd>50000)addTick(`💥 ${dir} liquidation $${(usd/1000).toFixed(0)}K`,dir==='LONG'?'lag':'arb');
+        }
+        // Update display
+        $('liq-long').textContent='$'+windowLongLiq.toLocaleString('en-US',{maximumFractionDigits:0});
+        $('liq-short').textContent='$'+windowShortLiq.toLocaleString('en-US',{maximumFractionDigits:0});
+        const net=windowShortLiq-windowLongLiq;
+        $('liq-net').textContent=(net>=0?'+':'')+Math.round(net/1000)+'K';
+        $('liq-net').style.color=net>10000?'#22c55e':net<-10000?'#ef4444':'#888';
+        $('liq-feed').innerHTML=liqFeed.map(l=>`<div style="padding:1px 0;"><span style="color:#555;margin-right:8px;">${l.time}</span>${l.text}</div>`).join('');
+      }
+    }catch(ex){}
+  };
+}
+
+// ─── Binance Forced Liquidations ───
+function connectBinanceLiqs(){
+  const ws=new WebSocket('wss://fstream.binance.com/ws/btcusdt@forceOrder');
+  ws.onopen=()=>{addTick('Binance liquidations connected');};
+  ws.onclose=()=>{setTimeout(connectBinanceLiqs,3000);};
+  ws.onerror=()=>ws.close();
+  ws.onmessage=(e)=>{
+    try{
+      const d=JSON.parse(e.data);
+      const o=d.o||{};
+      const side=o.S?.toLowerCase();
+      const qty=parseFloat(o.q||0);
+      const price=parseFloat(o.p||0);
+      const usd=qty*price;
+      const dir=side==='sell'?'LONG':'SHORT';
+      resetWindowLiqs();
+      if(dir==='LONG'){windowLongLiq+=usd;}else{windowShortLiq+=usd;}
+      $('liq-long').textContent='$'+windowLongLiq.toLocaleString('en-US',{maximumFractionDigits:0});
+      $('liq-short').textContent='$'+windowShortLiq.toLocaleString('en-US',{maximumFractionDigits:0});
+      const net=windowShortLiq-windowLongLiq;
+      $('liq-net').textContent=(net>=0?'+':'')+Math.round(net/1000)+'K';
+      $('liq-net').style.color=net>10000?'#22c55e':net<-10000?'#ef4444':'#888';
+      const emoji=dir==='LONG'?'🔻':'🔺';
+      const entry={time:ts(),text:`${emoji} ${dir} liq $${(usd/1000).toFixed(1)}K @ ${fmt(price)} (Bin)`};
+      liqFeed.unshift(entry);if(liqFeed.length>20)liqFeed.pop();
+      $('liq-feed').innerHTML=liqFeed.map(l=>`<div style="padding:1px 0;"><span style="color:#555;margin-right:8px;">${l.time}</span>${l.text}</div>`).join('');
+      if(usd>50000)addTick(`💥 ${dir} liquidation $${(usd/1000).toFixed(0)}K (Binance)`,dir==='LONG'?'lag':'arb');
+    }catch(ex){}
+  };
+}
+
+// ─── Funding Rate (poll every 30s) ───
+async function pollFunding(){
+  try{
+    const resp=await fetch('https://fapi.binance.com/fapi/v1/premiumIndex?symbol=BTCUSDT');
+    const d=await resp.json();
+    if(d.lastFundingRate){
+      const rate=parseFloat(d.lastFundingRate)*100;
+      $('fut-funding').textContent=rate.toFixed(4)+'%';
+      $('fut-funding').style.color=rate>0?'#22c55e':rate<0?'#ef4444':'#888';
+    }
+  }catch(e){}
 }
 
 function exchangeAvg(){
@@ -308,7 +426,7 @@ function updateLag(){
     const abs=Math.abs(diff);
     $('lag-value').textContent=(diff>=0?'+':'')+diff.toFixed(2);
     $('lag-unit').textContent='USD';
-    if(abs<10){$('lag-desc').textContent=`In sync (${[binPrice,cbPrice,krPrice,okPrice,bbPrice].filter(p=>p!=null).length} exchanges)`;$('lag-value').style.color='#555';}
+    if(abs<10){$('lag-desc').textContent=`In sync (${[binPrice,cbPrice,krPrice,okPrice,bbPrice].filter(p=>p!=null).length} exchanges)`;$('lag-value').style.color='#ccc';}
     else if(abs<50){$('lag-desc').textContent=`${diff>0?'Exchanges':'Polymarket'} lead`;$('lag-value').style.color='#4a9eff';}
     else{$('lag-desc').textContent=`${diff>0?'Exchanges':'Polymarket'} lead — LARGE LAG`;$('lag-value').style.color='#22c55e';addTick(`LAG $${abs.toFixed(0)}: Avg ${fmt(avg)} vs PM ${fmt(pmPrice)}`,'lag');}
     lagSamples.push(abs);if(lagSamples.length>1000)lagSamples.shift();
@@ -332,10 +450,45 @@ connectBybit();
 pollPolymarket();
 pollChainlink();
 pollTokens();
-setInterval(pollPolymarket,500);  // PM price every 500ms
+pollFunding();
+connectBinanceFutures();
+// Liquidation data now served via lag-server (browser websockets blocked by exchanges)
+async function pollLiveState(){
+  try{
+    const r=await fetch('/api/futures-live');
+    const d=await r.json();
+    if(d.long_liq!==undefined){
+      windowLongLiq=d.long_liq;
+      windowShortLiq=d.short_liq;
+      $('liq-long').textContent='$'+windowLongLiq.toLocaleString('en-US',{maximumFractionDigits:0});
+      $('liq-short').textContent='$'+windowShortLiq.toLocaleString('en-US',{maximumFractionDigits:0});
+      const net=d.net_pressure||0;
+      $('liq-net').textContent=(net>=0?'+':'')+Math.round(net/1000)+'K';
+      $('liq-net').style.color=net>10000?'#22c55e':net<-10000?'#ef4444':'#888';
+      // Update liq feed from recent events
+      if(d.recent_liqs&&d.recent_liqs.length){
+        liqFeed=d.recent_liqs.map(l=>{
+          const dir=l.side==='long_liq'?'LONG':'SHORT';
+          const emoji=dir==='LONG'?'🔻':'🔺';
+          const t=new Date(l.ts*1000);
+          const time=t.toTimeString().slice(0,8);
+          return{time,text:`${emoji} ${dir} liq $${(l.usd/1000).toFixed(1)}K (${l.exchange})`};
+        }).reverse();
+        $('liq-feed').innerHTML=liqFeed.map(l=>`<div style="padding:1px 0;"><span style="color:#555;margin-right:8px;">${l.time}</span>${l.text}</div>`).join('');
+      }
+    }
+    if(d.spread!==undefined&&d.spread!==null){
+      $('fut-spread').textContent=(d.spread>=0?'+':'')+d.spread.toFixed(2);
+      $('fut-spread').style.color=d.spread>0?'#22c55e':'#ef4444';
+    }
+  }catch(e){}
+  setTimeout(pollLiveState,2000);
+}
+pollLiveState();
+setInterval(pollPolymarket,500);
 setInterval(pollChainlink,1000);
 setInterval(pollTokens,5000);
-setInterval(pollBook,500);
+setInterval(pollFunding,30000);
 </script>
 </body>
 </html>

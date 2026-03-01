@@ -1008,7 +1008,7 @@ def run_loop(dry_run=False, live=False):
             if now - last_status > 30:
                 ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
                 window_str = datetime.fromtimestamp(current_window, tz=timezone.utc).strftime("%H:%M")
-                live_ledger = BOT_DIR / "ledgers" / "live.json"
+                live_ledger = LEDGER_PATH  # reasoning.json
                 if live_ledger.exists():
                     ledger = json.loads(live_ledger.read_text())
                     s = ledger["stats"]
@@ -1203,7 +1203,20 @@ def run_loop(dry_run=False, live=False):
                         resolve_cmd = ["python3.12", str(BOT_DIR / "live-trader.py"), "--resolve"]
                     else:
                         resolve_cmd = ["python3", str(BOT_DIR / "reasoning-trader.py"), "--resolve"]
-                    subprocess.run(resolve_cmd, capture_output=True, text=True, timeout=15)
+                    result = subprocess.run(resolve_cmd, capture_output=True, text=True, timeout=15)
+                    # Trigger browser redemption if a win was resolved
+                    if result.stdout and "WIN" in result.stdout:
+                        try:
+                            ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
+                            print(f"  [{ts}]   🔄 Triggering browser-based redemption...", flush=True)
+                            r = subprocess.run(
+                                [str(BOT_DIR / "redeem-browser.sh")],
+                                capture_output=True, text=True, timeout=15
+                            )
+                            if r.returncode == 0:
+                                print(f"  [{ts}]   ✅ Redeem task scheduled", flush=True)
+                        except Exception as e:
+                            print(f"  [{ts}]   ⚠ Redeem trigger error: {e}", flush=True)
                 except Exception:
                     pass
 

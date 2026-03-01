@@ -46,19 +46,23 @@ CHAINLINK_API = "https://data.chain.link/api/query-timescale"
 DELTA_SCALE = [
     (120, 80),   # 2 min left → need $80+
     (60, 30),    # 1 min left → need $30+
-    (30, 15),    # 30s left → need $15+
-    (10, 5),     # 10s left → need $5+
-    (3, 2),      # 3s left → need $2+
+    (30, 20),    # 30s left → need $20+
+    (10, 20),    # 10s left → need $20+
+    (3, 20),     # 3s left → need $20+
 ]
 
 # Momentum: need N of M exchange ticks in same direction over last ~5s
 MOMENTUM_WINDOW_SECS = 5
 MOMENTUM_MIN_EXCHANGES = 3  # need at least 3 exchanges confirming
 
-# DCA
-MAX_POSITION_PER_WINDOW = 80
-DCA_CHUNK = 20
+# DCA (defaults — overridden by half-Kelly each window)
+MAX_POSITION_PER_WINDOW = 90
+DCA_CHUNK = 22.5
 MAX_ENTRIES = 4
+KELLY_MIN_TRADES = 10     # need this many trades before using Kelly sizing
+KELLY_MIN_POSITION = 20   # floor
+KELLY_MAX_POSITION = 200  # ceiling (safety cap)
+MOMENTUM_FADE_THRESHOLD = 0.25  # block further DCA if |delta| shrinks >25% from first entry
 MIN_ENTRY_GAP_S = 3
 
 # Price limits
@@ -69,8 +73,10 @@ MIN_PROFIT_MARGIN = 0.02  # 2¢ after fees
 DAILY_LOSS_LIMIT = 200
 WINDOW_SECONDS = 300
 KILL_SWITCH = Path.home() / "POLY_KILL"
-ENTRY_ZONE_START = 60   # start scanning with 1 min left
-ENTRY_ZONE_END = 3      # stop 3s before close (order needs time to fill)
+ENTRY_ZONE_START = 90    # default entry zone start (1.5 min left)
+ENTRY_ZONE_EARLY = 90    # max early entry (same as default for now)
+EARLY_ENTRY_DELTA = 80   # delta threshold for earliest entry
+ENTRY_ZONE_END = 10     # stop 10s before close (order needs time to fill)
 
 # ─── State ───
 @dataclass
@@ -85,6 +91,8 @@ class WindowState:
     total_cost: float = 0
     total_shares: float = 0
     last_entry_time: float = 0
+    last_ask: float = 0  # previous entry's ask price (for collapse detection)
+    first_delta: float = 0  # first entry's |delta| (for momentum fade detection)
     side: str = ""  # locked after first entry
 
 exchange_prices = {}  # name -> deque of (timestamp, price)
@@ -106,7 +114,7 @@ def log_header():
     print(f"   Mode: {mode}")
     print(f"   Delta: {DELTA_SCALE[0][1]}$ @{DELTA_SCALE[0][0]}s → {DELTA_SCALE[-1][1]}$ @{DELTA_SCALE[-1][0]}s (linear)")
     print(f"   Momentum: {MOMENTUM_MIN_EXCHANGES}+ exchanges confirming over {MOMENTUM_WINDOW_SECS}s")
-    print(f"   DCA: ${DCA_CHUNK} x {MAX_ENTRIES} (max ${MAX_POSITION_PER_WINDOW}/window)")
+    print(f"   DCA: ${DCA_CHUNK} x {MAX_ENTRIES} (max ${MAX_POSITION_PER_WINDOW}/window) [half-Kelly dynamic]")
     print(f"   Entry zone: {ENTRY_ZONE_START}s → {ENTRY_ZONE_END}s before close")
     print(f"{'='*65}\n")
 
@@ -166,8 +174,11 @@ def get_book_ask(token_id):
     book = fetch_json(f"{CLOB_BASE}/book?token_id={token_id}")
     if not book:
         return None
-    asks = sorted(book.get("asks", []), key=lambda x: float(x["price"]))
-    return float(asks[0]["price"]) if asks else None
+    try:
+        asks = sorted(book.get("asks", []), key=lambda x: float(x["price"] or 0))
+        return float(asks[0]["price"]) if asks and asks[0].get("price") else None
+    except (ValueError, TypeError):
+        return None
 
 # ─── Ledger ───
 def load_ledger():
@@ -259,6 +270,12 @@ def place_order(direction, token_id, price, size_usd):
         log("    ⚠ KILL SWITCH active")
         return None
     
+    # Track consecutive balance errors to avoid spamming
+    if not hasattr(place_order, '_balance_pause_until'):
+        place_order._balance_pause_until = 0
+    if time.time() < place_order._balance_pause_until:
+        return None  # silently skip during balance pause
+    
     try:
         from py_clob_client.clob_types import OrderArgs, PartialCreateOrderOptions
         from py_clob_client.order_builder.constants import BUY
@@ -284,7 +301,12 @@ def place_order(direction, token_id, price, size_usd):
             log(f"    ⚠ Order not filled: {json.dumps(response)[:200]}")
             return None
     except Exception as e:
-        log(f"    ⚠ Order error: {e}")
+        err = str(e)
+        if "not enough balance" in err.lower() or "allowance" in err.lower():
+            log(f"    ⚠ Low funds — pausing orders for this window")
+            place_order._balance_pause_until = time.time() + 300  # pause 5 min
+        else:
+            log(f"    ⚠ Order error: {e}")
         return None
 
 # ─── Resolution ───
@@ -296,7 +318,7 @@ async def resolve_window(ws):
     # Wait for CLOB to resolve (typically 5-10 min)
     await asyncio.sleep(60)  # initial wait
     
-    for attempt in range(10):
+    for attempt in range(20):
         try:
             if ws.condition_id:
                 market = fetch_json(f"{CLOB_BASE}/markets/{ws.condition_id}")
@@ -315,29 +337,21 @@ async def resolve_window(ws):
                                 f"cost: ${ws.total_cost:.2f} | shares: {ws.total_shares:.1f}")
                             record_window(ws, outcome=result, pnl=pnl)
                             
-                            # Auto-redeem disabled — smart contract wallet can't receive native POL for gas
-                            # David redeems manually on polymarket.com
-                            if False and won and live_mode and ws.condition_id:
-                                for redeem_attempt in range(5):
-                                    await asyncio.sleep(10 if redeem_attempt == 0 else 30)
-                                    try:
-                                        import subprocess
-                                        r = subprocess.run(
-                                            ["/usr/local/bin/python3.12",
-                                             str(BOT_DIR / "redeem.py"),
-                                             ws.condition_id],
-                                            capture_output=True, text=True, timeout=30
-                                        )
-                                        output = (r.stdout or "").strip()
-                                        for line in output.split("\n"):
-                                            if line.strip():
-                                                log(f"  {line.strip()}")
-                                        if "Redeemed!" in output:
-                                            break
-                                        if "failed" in output.lower() or r.returncode != 0:
-                                            log(f"  ⚠ Redeem attempt {redeem_attempt+1}/5 failed, retrying...")
-                                    except Exception as e:
-                                        log(f"  ⚠ Redeem attempt {redeem_attempt+1}/5 error: {e}")
+                            # Auto-redeem via browser (OpenClaw spawns isolated session)
+                            if won and live_mode:
+                                try:
+                                    import subprocess
+                                    log(f"  🔄 Triggering browser-based redemption...")
+                                    r = subprocess.run(
+                                        [str(BOT_DIR / "redeem-browser.sh")],
+                                        capture_output=True, text=True, timeout=15
+                                    )
+                                    if r.returncode == 0:
+                                        log(f"  ✅ Redeem task scheduled")
+                                    else:
+                                        log(f"  ⚠ Redeem scheduling failed: {(r.stderr or r.stdout or '')[:100]}")
+                                except Exception as e:
+                                    log(f"  ⚠ Redeem trigger error: {e}")
                             return
         except Exception as e:
             pass
@@ -395,7 +409,10 @@ def discover_market():
                 d = abs(ts - current_window)
                 if d < best_dist:
                     best_dist = d
-                    best_price = float(n["price"]) / 1e18
+                    try:
+                        best_price = float(n["price"]) / 1e18
+                    except (ValueError, TypeError):
+                        pass
             info["strike"] = best_price
     
     return info
@@ -410,6 +427,65 @@ def check_daily_limit():
         log(f"⚠ DAILY LOSS LIMIT (${daily_pnl:.2f}) — stopping")
         return False
     return True
+
+def get_bankroll():
+    """Estimate bankroll from starting capital + cumulative PnL from ledger."""
+    try:
+        STARTING_CAPITAL = 350  # approximate initial deposit
+        ledger = load_ledger()
+        total_pnl = ledger.get("stats", {}).get("total_pnl", 0)
+        return STARTING_CAPITAL + total_pnl
+    except:
+        return None
+
+def calc_half_kelly():
+    """Calculate half-Kelly position size from ledger stats + current bankroll.
+    Returns (max_position, dca_chunk) or None if insufficient data."""
+    global MAX_POSITION_PER_WINDOW, DCA_CHUNK
+    
+    ledger = load_ledger()
+    trades = [t for t in ledger["trades"] if t.get("resolved") and t.get("pnl") is not None]
+    
+    if len(trades) < KELLY_MIN_TRADES:
+        log(f"    Kelly: only {len(trades)} resolved trades, need {KELLY_MIN_TRADES} — using default ${MAX_POSITION_PER_WINDOW}")
+        return
+    
+    wins = [t for t in trades if t["pnl"] > 0]
+    losses = [t for t in trades if t["pnl"] <= 0]
+    
+    if not wins or not losses:
+        log(f"    Kelly: no {'losses' if not losses else 'wins'} yet — using default ${MAX_POSITION_PER_WINDOW}")
+        return
+    
+    win_rate = len(wins) / len(trades)
+    avg_win_pct = sum(t["pnl"] / t["total_cost"] for t in wins) / len(wins)      # e.g. 0.13
+    avg_loss_pct = sum(abs(t["pnl"]) / t["total_cost"] for t in losses) / len(losses)  # e.g. 1.0
+    
+    # Kelly: f* = p - q/b  where b = avg_win_pct / avg_loss_pct
+    b = avg_win_pct / avg_loss_pct if avg_loss_pct > 0 else 1
+    kelly = win_rate - (1 - win_rate) / b
+    half_kelly = kelly / 2
+    
+    if half_kelly <= 0:
+        log(f"    Kelly: negative edge ({kelly:.1%}) — using minimum ${KELLY_MIN_POSITION}")
+        MAX_POSITION_PER_WINDOW = KELLY_MIN_POSITION
+        DCA_CHUNK = KELLY_MIN_POSITION / MAX_ENTRIES
+        return
+    
+    # Get bankroll
+    bankroll = get_bankroll()
+    if not bankroll:
+        log(f"    Kelly: couldn't fetch bankroll — using default ${MAX_POSITION_PER_WINDOW}")
+        return
+    
+    position = round(bankroll * half_kelly, 2)
+    position = max(KELLY_MIN_POSITION, min(KELLY_MAX_POSITION, position))
+    
+    MAX_POSITION_PER_WINDOW = position
+    DCA_CHUNK = round(position / MAX_ENTRIES, 2)
+    
+    log(f"    Kelly: WR={win_rate:.1%} b={b:.3f} f*={kelly:.1%} ½f*={half_kelly:.1%} "
+        f"bank=${bankroll:.0f} → ${position:.0f}/window (${DCA_CHUNK:.2f}×{MAX_ENTRIES})")
 
 # ─── Websocket Feeds ───
 async def exchange_feed(name, url, subscribe_msg, parse_fn):
@@ -434,30 +510,40 @@ async def exchange_feed(name, url, subscribe_msg, parse_fn):
                 await asyncio.sleep(3)
 
 def parse_binance(msg):
-    d = json.loads(msg)
-    return float(d.get("p", 0)) or None
+    try:
+        d = json.loads(msg)
+        return float(d.get("p", 0)) or None
+    except (ValueError, TypeError): return None
 
 def parse_coinbase(msg):
-    d = json.loads(msg)
-    return float(d["price"]) if d.get("type") == "ticker" and d.get("price") else None
+    try:
+        d = json.loads(msg)
+        return float(d["price"]) if d.get("type") == "ticker" and d.get("price") else None
+    except (ValueError, TypeError): return None
 
 def parse_kraken(msg):
-    d = json.loads(msg)
-    if d.get("channel") == "ticker" and d.get("data"):
-        return float(d["data"][0].get("last", 0)) or None
-    return None
+    try:
+        d = json.loads(msg)
+        if d.get("channel") == "ticker" and d.get("data"):
+            return float(d["data"][0].get("last", 0)) or None
+        return None
+    except (ValueError, TypeError): return None
 
 def parse_okx(msg):
-    d = json.loads(msg)
-    if d.get("data") and d["data"][0].get("last"):
-        return float(d["data"][0]["last"])
-    return None
+    try:
+        d = json.loads(msg)
+        if d.get("data") and d["data"][0].get("last"):
+            return float(d["data"][0]["last"])
+        return None
+    except (ValueError, TypeError): return None
 
 def parse_bybit(msg):
-    d = json.loads(msg)
-    if d.get("data") and d["data"].get("lastPrice"):
-        return float(d["data"]["lastPrice"])
-    return None
+    try:
+        d = json.loads(msg)
+        if d.get("data") and d["data"].get("lastPrice"):
+            return float(d["data"]["lastPrice"])
+        return None
+    except (ValueError, TypeError): return None
 
 # ─── Main Loop ───
 async def sniper_loop():
@@ -489,8 +575,11 @@ async def sniper_loop():
                 window = WindowState(window_start=current_window)
                 last_window = current_window
                 
-                # Wait for PM API to have the correct strike
-                await asyncio.sleep(5)
+                # Recalculate half-Kelly position sizing
+                calc_half_kelly()
+                
+                # Wait for PM API to set up the market and publish correct strike
+                await asyncio.sleep(10)
                 
                 # Discover market
                 info = discover_market()
@@ -502,12 +591,33 @@ async def sniper_loop():
                     window.slug = info["slug"]
                     ts_str = datetime.fromtimestamp(current_window, tz=timezone.utc).strftime("%H:%M")
                     log(f"►  Window {ts_str} | Strike ${window.strike:,.2f} | "
-                        f"tokens: {'ok' if window.up_token else 'MISSING'}")
+                        f"Max position this window: ${MAX_POSITION_PER_WINDOW:.0f}")
+                    if not window.up_token:
+                        log(f"⚠ MISSING TOKEN IDs — skipping window")
             
-            # Only scan in entry zone
-            if remaining > ENTRY_ZONE_START or remaining < ENTRY_ZONE_END:
+            # Dynamic entry zone: bigger delta = earlier entry allowed
+            # At delta >= 80: enter as early as 180s left
+            # At delta < 30: wait until 90s left (default)
+            # Linear interpolation between
+            if remaining < ENTRY_ZONE_END:
                 await asyncio.sleep(0.5)
                 continue
+            if remaining > ENTRY_ZONE_EARLY:
+                await asyncio.sleep(0.5)
+                continue
+            if remaining > ENTRY_ZONE_START:
+                # Check if delta is large enough for early entry
+                quick_avg = get_exchange_avg()
+                if quick_avg and window.strike:
+                    quick_delta = abs(quick_avg - window.strike)
+                    # Linear: delta 30 → 90s, delta 80 → 180s
+                    early_threshold = ENTRY_ZONE_START + (ENTRY_ZONE_EARLY - ENTRY_ZONE_START) * min(1.0, max(0.0, (quick_delta - 30) / (EARLY_ENTRY_DELTA - 30)))
+                    if remaining > early_threshold:
+                        await asyncio.sleep(0.5)
+                        continue
+                else:
+                    await asyncio.sleep(0.5)
+                    continue
             
             # Guards
             if not window.strike or not window.up_token:
@@ -564,6 +674,22 @@ async def sniper_loop():
                 await asyncio.sleep(0.5)
                 continue
             
+            # ─── Ask collapse guard ───
+            if window.last_ask > 0:
+                ask_drop = (window.last_ask - ask) / window.last_ask
+                if ask_drop > 0.20:
+                    log(f"⚠  Ask collapsed {window.last_ask:.3f}→{ask:.3f} ({ask_drop:.0%} drop) — skipping entry")
+                    await asyncio.sleep(1)
+                    continue
+            
+            # ─── Momentum fade guard ───
+            if window.first_delta > 0:
+                fade = (window.first_delta - abs_delta) / window.first_delta
+                if fade > MOMENTUM_FADE_THRESHOLD:
+                    log(f"⚠  Momentum fading: Δ {window.first_delta:.1f}→{abs_delta:.1f} ({fade:.0%} fade) — skipping entry")
+                    await asyncio.sleep(1)
+                    continue
+            
             # ─── ENTRY ───
             entry_num = len(window.entries) + 1
             log(f"▲  DCA #{entry_num} | {direction} | Δ={delta:+.1f} (need {min_delta:.0f}) | "
@@ -593,6 +719,9 @@ async def sniper_loop():
                 window.total_cost += result["cost"]
                 window.total_shares += result["shares"]
                 window.last_entry_time = time.time()
+                window.last_ask = ask
+                if not window.first_delta:
+                    window.first_delta = abs_delta
                 window.side = direction
                 
                 log(f"    ✓ ${window.total_cost:.0f}/{MAX_POSITION_PER_WINDOW} "
