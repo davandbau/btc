@@ -1,15 +1,25 @@
 #!/bin/bash
-# Bot control script — start/stop the reasoning bot + watchdog
+# Bot control script — start/stop the ETH reasoning bot + watchdog
 # Usage: ./bot.sh start | stop | status | unlock | lock
 
 BOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LOG="$BOT_DIR/logs/reasoning-loop.log"
 REDEEM_LOG="$BOT_DIR/logs/redeem-watcher.log"
 NO_TRADE="$BOT_DIR/NO_TRADE"
+PIDFILE="$BOT_DIR/bot.pid"
 WATCHDOG_ID="ed2b9212-92a1-4689-90ae-c14f4b18cff9"
 
 get_pid() {
-    ps aux | grep "reasoning-loop.py" | grep -v grep | awk '{print $2}' | head -1
+    # Primary: pidfile. Fallback: pgrep with full path.
+    if [ -f "$PIDFILE" ]; then
+        local pid=$(cat "$PIDFILE" 2>/dev/null)
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            echo "$pid"
+            return
+        fi
+        rm -f "$PIDFILE"  # stale pidfile
+    fi
+    pgrep -f "$BOT_DIR/reasoning-loop.py" 2>/dev/null | head -1
 }
 
 get_redeem_pid() {
@@ -55,10 +65,11 @@ case "$1" in
         echo "   ✅ Watchdog confirmed enabled"
 
         # Start bot
-        echo "🚀 Starting reasoning bot..."
+        echo "🚀 Starting ETH reasoning bot..."
         cd "$BOT_DIR"
         nohup python3.12 -u reasoning-loop.py --live > "$LOG" 2>&1 &
         NEW_PID=$!
+        echo "$NEW_PID" > "$PIDFILE"
         sleep 2
 
         if kill -0 "$NEW_PID" 2>/dev/null; then
@@ -67,7 +78,8 @@ case "$1" in
             # Start redeem watcher
             REDEEM_PID=$(get_redeem_pid)
             if [ -z "$REDEEM_PID" ]; then
-                nohup python3.12 "$BOT_DIR/redeem-watcher.py" > "$REDEEM_LOG" 2>&1 &
+                # ETH: redeem watcher managed by BTC bot.sh
+            # nohup python3.12 "$BOT_DIR/redeem-watcher.py" > "$REDEEM_LOG" 2>&1 &
                 echo "   ✅ Redeem watcher running (PID $!)"
             else
                 echo "   ℹ️  Redeem watcher already running (PID $REDEEM_PID)"
@@ -128,8 +140,10 @@ case "$1" in
                 exit 1
             fi
             echo "   ✅ Bot confirmed stopped"
+            rm -f "$PIDFILE"
         else
             echo "   ℹ️  Bot wasn't running"
+            rm -f "$PIDFILE"
         fi
 
         # Kill redeem watcher

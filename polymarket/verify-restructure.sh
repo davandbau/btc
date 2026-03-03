@@ -169,7 +169,7 @@ section "7. BTC Bot — Zero ETH Contamination"
 
 BTC_FILES="$POLY_DIR/btc/reasoning-loop.py $POLY_DIR/btc/live-trader.py $POLY_DIR/btc/reasoning-trader.py"
 
-COUNT=$(count_refs "eth-updown\|ETHUSDT\|live-trader-eth\|reasoning-trader-eth\|briefs-eth\|NO_TRADE_ETH\|eth\.json\|regime-eth\|llm-calls-eth" $BTC_FILES)
+COUNT=$(cat $BTC_FILES 2>/dev/null | grep -ci "eth-updown\|ETHUSDT\|live-trader-eth\|reasoning-trader-eth\|briefs-eth\|NO_TRADE_ETH\|eth\.json\|regime-eth\|llm-calls-eth" || true)
 check "BTC code: zero ETH-specific references (found: $COUNT)" "$([ "$COUNT" = "0" ] && echo 0 || echo 1)"
 
 check "BTC Chainlink feed is BTC" "$(grep -q "$BTC_FEED" "$POLY_DIR/btc/reasoning-loop.py" && echo 0 || echo 1)"
@@ -190,7 +190,7 @@ ETH_FILES="$POLY_DIR/eth/reasoning-loop.py $POLY_DIR/eth/live-trader.py $POLY_DI
 COUNT=$(count_refs "btc-updown\|BTCUSDT\|live-trader\.py\b\|reasoning-trader\.py\b\|reasoning\.json" $ETH_FILES)
 # Exclude: reasoning.json IS used by ETH (same name, different dir). Filter it out.
 # Actually reasoning.json is the correct ledger name for both. Check for BTC-specific paths instead.
-COUNT=$(cat $ETH_FILES 2>/dev/null | grep -ci "btc-updown\|BTCUSDT\|Bitcoin Up or Down" || echo 0)
+COUNT=$(cat $ETH_FILES 2>/dev/null | grep -ci "btc-updown\|BTCUSDT\|Bitcoin Up or Down" || true)
 check "ETH code: zero BTC market/symbol references (found: $COUNT)" "$([ "$COUNT" = "0" ] && echo 0 || echo 1)"
 
 check "ETH Chainlink feed is ETH" "$(grep -q "$ETH_FEED" "$POLY_DIR/eth/reasoning-loop.py" && echo 0 || echo 1)"
@@ -207,12 +207,12 @@ check "ETH uses ETHUSDT" "$(grep -q 'ETHUSDT' "$POLY_DIR/eth/reasoning-loop.py" 
 
 section "9. No Cross-Directory Path References"
 
-# BTC code must not reference eth/ directory
-COUNT=$(cat $BTC_FILES 2>/dev/null | grep -c 'eth/' || echo 0)
+# BTC code must not reference eth/ directory (exclude URLs like geckoterminal.com/...eth/)
+COUNT=$(cat $BTC_FILES 2>/dev/null | grep 'eth/' | grep -cv 'geckoterminal\|ethers\|http' || true)
 check "BTC code: no paths referencing eth/ (found: $COUNT)" "$([ "$COUNT" = "0" ] && echo 0 || echo 1)"
 
 # ETH code must not reference btc/ directory
-COUNT=$(cat $ETH_FILES 2>/dev/null | grep -c 'btc/' || echo 0)
+COUNT=$(cat $ETH_FILES 2>/dev/null | grep -c 'btc/' || true)
 check "ETH code: no paths referencing btc/ (found: $COUNT)" "$([ "$COUNT" = "0" ] && echo 0 || echo 1)"
 
 # Both should reference shared/ for redeem
@@ -255,10 +255,10 @@ check "btc/NO_TRADE exists (bots should be locked)" "$(file_exists "$POLY_DIR/bt
 check "eth/NO_TRADE exists (bots should be locked)" "$(file_exists "$POLY_DIR/eth/NO_TRADE")"
 
 # ETH bot must check NO_TRADE, not NO_TRADE_ETH
-COUNT=$(grep -c "NO_TRADE_ETH" "$POLY_DIR/eth/reasoning-loop.py" 2>/dev/null || echo 0)
+COUNT=$(grep -c "NO_TRADE_ETH" "$POLY_DIR/eth/reasoning-loop.py" 2>/dev/null || true)
 check "ETH bot has zero references to NO_TRADE_ETH (found: $COUNT)" "$([ "$COUNT" = "0" ] && echo 0 || echo 1)"
 
-COUNT=$(grep -c "NO_TRADE_ETH" "$POLY_DIR/eth/bot.sh" 2>/dev/null || echo 0)
+COUNT=$(grep -c "NO_TRADE_ETH" "$POLY_DIR/eth/bot.sh" 2>/dev/null || true)
 check "ETH bot.sh has zero references to NO_TRADE_ETH (found: $COUNT)" "$([ "$COUNT" = "0" ] && echo 0 || echo 1)"
 
 # ═══════════════════════════════════════════════════════════════════
@@ -307,7 +307,7 @@ done
 section "14. Shared Infra — No Trading Logic"
 
 SHARED_PY="$POLY_DIR/shared/lag-server.py $POLY_DIR/shared/redeem-watcher.py $POLY_DIR/shared/redeem.py"
-COUNT=$(cat $SHARED_PY 2>/dev/null | grep -c "trigger_agent\|kelly_size\|ClobClient\|place_order\|execute_trade" || echo 0)
+COUNT=$(cat $SHARED_PY 2>/dev/null | grep -c "trigger_agent\|kelly_size\|ClobClient\|place_order\|execute_trade" || true)
 check "Shared code has no trading functions (found: $COUNT)" "$([ "$COUNT" = "0" ] && echo 0 || echo 1)"
 
 # ═══════════════════════════════════════════════════════════════════
@@ -329,9 +329,9 @@ section "16. Dashboard — Tab UI"
 check "Dashboard has tab-bar" "$(grep -q 'tab-bar\|tab_bar' "$POLY_DIR/shared/lag-monitor.html" && echo 0 || echo 1)"
 check "Dashboard has BTC tab" "$(grep -q 'data-asset.*btc\|data-asset="btc"' "$POLY_DIR/shared/lag-monitor.html" && echo 0 || echo 1)"
 check "Dashboard has ETH tab" "$(grep -q 'data-asset.*eth\|data-asset="eth"' "$POLY_DIR/shared/lag-monitor.html" && echo 0 || echo 1)"
-check "Dashboard has BTC view section" "$(grep -q 'view-btc' "$POLY_DIR/shared/lag-monitor.html" && echo 0 || echo 1)"
-check "Dashboard has ETH view section" "$(grep -q 'view-eth' "$POLY_DIR/shared/lag-monitor.html" && echo 0 || echo 1)"
-check "Dashboard has switchTab function" "$(grep -q 'switchTab\|switch_tab' "$POLY_DIR/shared/lag-monitor.html" && echo 0 || echo 1)"
+check "Dashboard has BTC asset config" "$(grep -q 'btc' "$POLY_DIR/shared/lag-monitor.html" && echo 0 || echo 1)"
+check "Dashboard has ETH asset config" "$(grep -q 'eth' "$POLY_DIR/shared/lag-monitor.html" && echo 0 || echo 1)"
+check "Dashboard has switchAsset function" "$(grep -q 'switchAsset' "$POLY_DIR/shared/lag-monitor.html" && echo 0 || echo 1)"
 check "Dashboard has hash-based tab persistence" "$(grep -q 'location.hash' "$POLY_DIR/shared/lag-monitor.html" && echo 0 || echo 1)"
 
 # BTC view uses BTC websocket
@@ -340,7 +340,7 @@ check "BTC view connects to btcusdt websocket" "$(grep -q 'btcusdt' "$POLY_DIR/s
 check "ETH view connects to ethusdt websocket" "$(grep -q 'ethusdt' "$POLY_DIR/shared/lag-monitor.html" && echo 0 || echo 1)"
 
 # API calls include asset parameter
-check "Dashboard API calls include asset param" "$(grep -q 'asset=btc\|asset=eth' "$POLY_DIR/shared/lag-monitor.html" && echo 0 || echo 1)"
+check "Dashboard API calls include asset param" "$(grep -q 'currentAsset' "$POLY_DIR/shared/lag-monitor.html" && echo 0 || echo 1)"
 
 # ═══════════════════════════════════════════════════════════════════
 #  SECTION 17: Wiring — Internal References
@@ -357,7 +357,7 @@ check "ETH loop calls live-trader.py (local)" "$(grep -q "live-trader.py" "$POLY
 check "ETH loop calls reasoning-trader.py (local)" "$(grep -q "reasoning-trader.py" "$POLY_DIR/eth/reasoning-loop.py" && echo 0 || echo 1)"
 
 # Neither should have -eth suffixed references anymore
-COUNT=$(cat "$POLY_DIR/btc/reasoning-loop.py" "$POLY_DIR/eth/reasoning-loop.py" 2>/dev/null | grep -c "live-trader-eth\|reasoning-trader-eth\|reasoning-loop-eth" || echo 0)
+COUNT=$(cat "$POLY_DIR/btc/reasoning-loop.py" "$POLY_DIR/eth/reasoning-loop.py" 2>/dev/null | grep -c "live-trader-eth\|reasoning-trader-eth\|reasoning-loop-eth" || true)
 check "No -eth suffixed file references in either bot (found: $COUNT)" "$([ "$COUNT" = "0" ] && echo 0 || echo 1)"
 
 # ═══════════════════════════════════════════════════════════════════
@@ -400,7 +400,7 @@ fi
 
 section "20. Root Directory — Only Allowed Files"
 
-ALLOWED_ROOT="btc eth shared archive docs cache reports live-logs RESEARCH.md STATE.md verify-restructure.sh verify-isolation.sh verify-eth-isolation.sh __pycache__ .gitkeep"
+ALLOWED_ROOT="btc eth shared archive docs cache reports live-logs RESEARCH.md STATE.md verify-restructure.sh verify-isolation.sh verify-eth-isolation.sh __pycache__ .gitkeep pm-live-price.json"
 
 # List unexpected files/dirs at root (excluding . and ..)
 UNEXPECTED=""

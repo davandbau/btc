@@ -1,0 +1,14 @@
+{
+  "trades": [],
+  "passes": [],
+  "stats": {
+    "total_pnl": 0.0,
+    "wins": 0,
+    "losses": 0,
+    "total_trades": 0,
+    "gross_profit": 0.0,
+    "gross_loss": 0.0,
+    "total_fees": 0.0,
+    "total_wagered": 0.0
+  }
+}

@@ -1,15 +1,25 @@
 #!/bin/bash
-# Bot control script — start/stop the ETH reasoning bot + watchdog
+# Bot control script — start/stop the reasoning bot + watchdog
 # Usage: ./bot.sh start | stop | status | unlock | lock
 
 BOT_DIR="$(cd "$(dirname "$0")" && pwd)"
-LOG="$BOT_DIR/logs/eth-loop.log"
+LOG="$BOT_DIR/logs/reasoning-loop.log"
 REDEEM_LOG="$BOT_DIR/logs/redeem-watcher.log"
-NO_TRADE_ETH="$BOT_DIR/NO_TRADE_ETH"
+NO_TRADE="$BOT_DIR/NO_TRADE"
+PIDFILE="$BOT_DIR/bot.pid"
 WATCHDOG_ID="ed2b9212-92a1-4689-90ae-c14f4b18cff9"
 
 get_pid() {
-    ps aux | grep "reasoning-loop-eth.py" | grep -v grep | awk '{print $2}' | head -1
+    # Primary: pidfile. Fallback: pgrep with full path.
+    if [ -f "$PIDFILE" ]; then
+        local pid=$(cat "$PIDFILE" 2>/dev/null)
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            echo "$pid"
+            return
+        fi
+        rm -f "$PIDFILE"  # stale pidfile
+    fi
+    pgrep -f "$BOT_DIR/reasoning-loop.py" 2>/dev/null | head -1
 }
 
 get_redeem_pid() {
@@ -55,10 +65,11 @@ case "$1" in
         echo "   ✅ Watchdog confirmed enabled"
 
         # Start bot
-        echo "🚀 Starting ETH reasoning bot..."
+        echo "🚀 Starting reasoning bot..."
         cd "$BOT_DIR"
-        nohup python3.12 -u reasoning-loop-eth.py --live > "$LOG" 2>&1 &
+        nohup python3.12 -u reasoning-loop.py --live > "$LOG" 2>&1 &
         NEW_PID=$!
+        echo "$NEW_PID" > "$PIDFILE"
         sleep 2
 
         if kill -0 "$NEW_PID" 2>/dev/null; then
@@ -67,16 +78,15 @@ case "$1" in
             # Start redeem watcher
             REDEEM_PID=$(get_redeem_pid)
             if [ -z "$REDEEM_PID" ]; then
-                # ETH: redeem watcher managed by BTC bot.sh
-            # nohup python3.12 "$BOT_DIR/redeem-watcher.py" > "$REDEEM_LOG" 2>&1 &
+                nohup python3.12 "$BOT_DIR/redeem-watcher.py" > "$REDEEM_LOG" 2>&1 &
                 echo "   ✅ Redeem watcher running (PID $!)"
             else
                 echo "   ℹ️  Redeem watcher already running (PID $REDEEM_PID)"
             fi
 
-            if [ -f "$NO_TRADE_ETH" ]; then
+            if [ -f "$NO_TRADE" ]; then
                 echo ""
-                echo "⛔ NO_TRADE_ETH block still active — run './bot.sh unlock' when ready"
+                echo "⛔ NO_TRADE block still active — run './bot.sh unlock' when ready"
             fi
         else
             echo "❌ Bot failed to start — check $LOG"
@@ -129,8 +139,10 @@ case "$1" in
                 exit 1
             fi
             echo "   ✅ Bot confirmed stopped"
+            rm -f "$PIDFILE"
         else
             echo "   ℹ️  Bot wasn't running"
+            rm -f "$PIDFILE"
         fi
 
         # Kill redeem watcher
@@ -141,35 +153,35 @@ case "$1" in
         fi
 
         # Lock trading
-        echo "$(date '+%Y-%m-%d %H:%M:%S') — stopped via bot.sh" > "$NO_TRADE_ETH"
-        echo "⛔ NO_TRADE_ETH lock set"
+        echo "$(date '+%Y-%m-%d %H:%M:%S') — stopped via bot.sh" > "$NO_TRADE"
+        echo "⛔ NO_TRADE lock set"
 
         # Final verification
         echo ""
         FINAL_PID=$(get_pid)
         FINAL_WD=$(watchdog_enabled | tr -d "[:space:]")
-        if [ -z "$FINAL_PID" ] && [ "$FINAL_WD" != "true" ] && [ -f "$NO_TRADE_ETH" ]; then
+        if [ -z "$FINAL_PID" ] && [ "$FINAL_WD" != "true" ] && [ -f "$NO_TRADE" ]; then
             echo "✅ Full shutdown confirmed: bot down, watchdog disabled, trading locked"
         else
             echo "⚠️  Shutdown incomplete:"
             [ -n "$FINAL_PID" ] && echo "   ❌ Bot still running (PID $FINAL_PID)"
             [ "$FINAL_WD" = "true" ] && echo "   ❌ Watchdog still enabled"
-            [ ! -f "$NO_TRADE_ETH" ] && echo "   ❌ NO_TRADE_ETH lock not set"
+            [ ! -f "$NO_TRADE" ] && echo "   ❌ NO_TRADE lock not set"
             exit 1
         fi
         ;;
 
     unlock)
-        if [ ! -f "$NO_TRADE_ETH" ]; then
+        if [ ! -f "$NO_TRADE" ]; then
             echo "✅ Already unlocked — trading is allowed"
             exit 0
         fi
-        rm "$NO_TRADE_ETH"
+        rm "$NO_TRADE"
         echo "🔓 Trading unlocked"
         ;;
 
     lock)
-        echo "$(date '+%Y-%m-%d %H:%M:%S') — locked via bot.sh" > "$NO_TRADE_ETH"
+        echo "$(date '+%Y-%m-%d %H:%M:%S') — locked via bot.sh" > "$NO_TRADE"
         echo "⛔ Trading locked (bot continues monitoring)"
         ;;
 
@@ -195,8 +207,8 @@ case "$1" in
             echo "💰 Redeem watcher: not running"
         fi
 
-        if [ -f "$NO_TRADE_ETH" ]; then
-            echo "⛔ NO_TRADE_ETH block active"
+        if [ -f "$NO_TRADE" ]; then
+            echo "⛔ NO_TRADE block active"
         else
             echo "🔓 Trading allowed"
         fi
@@ -204,13 +216,13 @@ case "$1" in
 
         ack-tilt)
         # Acknowledge a losing streak — reset tilt guard watermark
-        LEDGER="$BOT_DIR/ledgers/eth.json"
+        LEDGER="$BOT_DIR/ledgers/reasoning.json"
         if [ ! -f "$LEDGER" ]; then
             echo "❌ No ledger found"
             exit 1
         fi
         # Check bot is stopped
-        if pgrep -f "reasoning-loop-eth.py" > /dev/null 2>&1; then
+        if pgrep -f "reasoning-loop.py" > /dev/null 2>&1; then
             echo "❌ Stop the bot first (bot.sh stop)"
             exit 1
         fi

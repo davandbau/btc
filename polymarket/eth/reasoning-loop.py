@@ -34,7 +34,7 @@ except Exception:
     DIRECT_API = False
 
 BOT_DIR = Path(__file__).parent
-LEDGER_PATH = BOT_DIR / "ledgers" / "eth.json"
+LEDGER_PATH = BOT_DIR / "ledgers" / "reasoning.json"
 GAMMA_BASE = "https://gamma-api.polymarket.com"
 CLOB_BASE = "https://clob.polymarket.com"
 CHAINLINK_FEED_ID = "0x000359843a543ee2fe414dc14c7e7920ef10f4372990b79d6361cdc0dd1ba782"
@@ -669,7 +669,7 @@ def build_brief(cached_strike=None):
         }
 
     # Previous window results
-    ledger_path = BOT_DIR / "ledgers" / "eth.json"
+    ledger_path = BOT_DIR / "ledgers" / "reasoning.json"
     if ledger_path.exists():
         ledger = json.loads(ledger_path.read_text())
         recent = [t for t in ledger.get("trades", []) if t.get("outcome")][-3:]
@@ -701,7 +701,7 @@ def build_brief(cached_strike=None):
             "rsi_6": ta.get("rsi_6"),
             "ema_signal": ta.get("ema_signal"),
         }
-        Path(LOGS_DIR / "regime-eth.json").write_text(json.dumps(regime_data))
+        Path(LOGS_DIR / "regime-live.json").write_text(json.dumps(regime_data))
     except Exception:
         pass
 
@@ -715,16 +715,16 @@ def trigger_agent(brief, tranche, prior_decisions, dry_run=False, live=False):
     tranche_id = tranche["id"]
     base_size = MAX_POSITION  # for display only
     if live:
-        trade_cmd = f"python3.12 {BOT_DIR / 'live-trader-eth.py'}"
-        trader_script = str(BOT_DIR / "live-trader-eth.py")
+        trade_cmd = f"python3.12 {BOT_DIR / 'live-trader.py'}"
+        trader_script = str(BOT_DIR / "live-trader.py")
         trader_python = "python3.12"
     else:
-        trade_cmd = f"python3 {BOT_DIR / 'reasoning-trader-eth.py'}"
-        trader_script = str(BOT_DIR / "reasoning-trader-eth.py")
+        trade_cmd = f"python3 {BOT_DIR / 'reasoning-trader.py'}"
+        trader_script = str(BOT_DIR / "reasoning-trader.py")
         trader_python = "python3"
 
     # Save brief snapshot for post-hoc analysis
-    briefs_dir = BOT_DIR / "briefs-eth"
+    briefs_dir = BOT_DIR / "briefs"
     briefs_dir.mkdir(exist_ok=True)
     brief_file = briefs_dir / f"{brief.get('window_start', 0)}_T{tranche_id}.json"
     brief_file.write_text(json.dumps(brief, indent=2, default=str))
@@ -771,7 +771,7 @@ def trigger_agent(brief, tranche, prior_decisions, dry_run=False, live=False):
     print(f"  [{ts}] ◈ T{tranche_id} — triggering agent (base ${base_size:.0f}, {brief.get('remaining_s', '?')}s left)...")
 
     # Prepare LLM call log directory
-    llm_log_dir = BOT_DIR / "logs" / "llm-calls-eth"
+    llm_log_dir = BOT_DIR / "logs" / "llm-calls"
     llm_log_dir.mkdir(parents=True, exist_ok=True)
     call_ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
     window_id = brief.get("window_start", 0)
@@ -1182,14 +1182,14 @@ def run_loop(dry_run=False, live=False):
     except Exception as e:
         checks.append(("Brief signals", f"❌ {e}"))
 
-    # 8. NO_TRADE_ETH file
-    no_trade = (BOT_DIR / "NO_TRADE_ETH").exists()
+    # 8. NO_TRADE file
+    no_trade = (BOT_DIR / "NO_TRADE").exists()
     if no_trade and not dry_run:
-        checks.append(("NO_TRADE_ETH", "⛔ active — trading blocked until unlocked"))
+        checks.append(("NO_TRADE", "⛔ active — trading blocked until unlocked"))
     elif no_trade and dry_run:
-        checks.append(("NO_TRADE_ETH", "⛔ active — bypassed in paper mode"))
+        checks.append(("NO_TRADE", "⛔ active — bypassed in paper mode"))
     else:
-        checks.append(("NO_TRADE_ETH", "🔓 not set — trading allowed"))
+        checks.append(("NO_TRADE", "🔓 not set — trading allowed"))
 
     # Print results
     for name, result in checks:
@@ -1264,19 +1264,19 @@ def run_loop(dry_run=False, live=False):
                     print(f"  [{ts}] Window {window_str} | {elapsed:.0f}s in, {remaining:.0f}s left")
                 last_status = now
 
-            # ---- NO_TRADE_ETH kill switch (skipped in dry-run/paper mode) ----
-            no_trade_file = BOT_DIR / "NO_TRADE_ETH"
+            # ---- NO_TRADE kill switch (skipped in dry-run/paper mode) ----
+            no_trade_file = BOT_DIR / "NO_TRADE"
             if no_trade_file.exists() and not dry_run:
                 if not state.get("no_trade_warned"):
                     ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
-                    print(f"  [{ts}] ⛔ NO_TRADE_ETH file present — all trading blocked")
+                    print(f"  [{ts}] ⛔ NO_TRADE file present — all trading blocked")
                     state["no_trade_warned"] = True
                     state["done"] = True
                 # Skip monitoring entirely
             elif state.get("no_trade_warned"):
-                # NO_TRADE_ETH was just removed — announce trading is live
+                # NO_TRADE was just removed — announce trading is live
                 ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
-                print(f"\n  [{ts}] 🔓 NO_TRADE_ETH lifted — TRADING IS NOW LIVE\n")
+                print(f"\n  [{ts}] 🔓 NO_TRADE lifted — TRADING IS NOW LIVE\n")
                 state["no_trade_warned"] = False
                 state["done"] = False
             # ---- Monitoring Window Logic ----
@@ -1362,7 +1362,7 @@ def run_loop(dry_run=False, live=False):
                             recent = brief.get("recent_results", [])
                             tilt_watermark = None
                             try:
-                                _ledger = json.loads((BOT_DIR / "ledgers" / "eth.json").read_text())
+                                _ledger = json.loads((BOT_DIR / "ledgers" / "reasoning.json").read_text())
                                 _wm = _ledger.get("tilt_reset_after")
                                 if _wm:
                                     tilt_watermark = _wm
@@ -1558,18 +1558,18 @@ def run_loop(dry_run=False, live=False):
                 last_resolve = now
                 try:
                     if live:
-                        resolve_cmd = ["python3.12", str(BOT_DIR / "live-trader-eth.py"), "--resolve"]
+                        resolve_cmd = ["python3.12", str(BOT_DIR / "live-trader.py"), "--resolve"]
                     else:
-                        resolve_cmd = ["python3", str(BOT_DIR / "reasoning-trader-eth.py"), "--resolve"]
+                        resolve_cmd = ["python3", str(BOT_DIR / "reasoning-trader.py"), "--resolve"]
                     result = subprocess.run(resolve_cmd, capture_output=True, text=True, timeout=15)
                     # Trigger browser redemption if a win was resolved
-                    # live-trader-eth.py prints "+$" for wins (positive PnL)
+                    # live-trader.py prints "+$" for wins (positive PnL)
                     if result.stdout and "+$" in result.stdout:
                         try:
                             ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
                             print(f"  [{ts}]   🔄 Triggering browser-based redemption...", flush=True)
                             r = subprocess.run(
-                                [str(BOT_DIR / "redeem-browser.sh")],
+                                [str(BOT_DIR.parent / "shared" / "redeem-browser.sh")],
                                 capture_output=True, text=True, timeout=15
                             )
                             if r.returncode == 0:
@@ -1609,6 +1609,6 @@ def run_loop(dry_run=False, live=False):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Polymarket Reasoning Loop — Tranched")
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--live", action="store_true", help="Execute real trades via live-trader-eth.py")
+    parser.add_argument("--live", action="store_true", help="Execute real trades via live-trader.py")
     args = parser.parse_args()
     run_loop(dry_run=args.dry_run, live=args.live)

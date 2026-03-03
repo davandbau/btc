@@ -1,1 +1,0 @@
-{"window": 1772556600, "long_liq": 0, "short_liq": 3965, "net_pressure": 3965, "liq_count": 2, "recent_liqs": [{"ts": 1772556619.3, "side": "short_liq", "usd": 957, "exchange": "binance"}, {"ts": 1772556626.6, "side": "short_liq", "usd": 3008, "exchange": "binance"}], "spread": -23.84, "fut_price": 68071.8, "spot_price": 68095.64, "updated": 1772556660.4}

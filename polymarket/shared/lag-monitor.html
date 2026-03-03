@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>BTC Arbitrage Intelligence</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>₿</text></svg>">
+<title>Arbitrage Intelligence</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📊</text></svg>">
 <style>
   @import url('https://api.fontshare.com/v2/css?f[]=satoshi@300,400,500,600,700&display=swap');
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -60,6 +60,12 @@
   .trend-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
   .status span { font-size: 14px; color: #888; }
 
+  /* Tab bar */
+  .tab-bar { display: flex; gap: 8px; margin-bottom: 16px; position: sticky; top: 0; z-index: 100; background: #15191d; padding: 12px 0 8px 0; }
+  .tab-bar button { background: transparent; border: 2px solid #242b32; border-radius: 20px; padding: 6px 20px; font-family: 'Satoshi', sans-serif; font-size: 14px; font-weight: 500; color: #586879; cursor: pointer; transition: all 0.15s ease; }
+  .tab-bar button:hover { border-color: #3a4450; color: #dee3e7; }
+  .tab-bar button.active { border-color: #3db468; color: #3db468; }
+
   /* Mobile responsive */
   @media (max-width: 768px) {
     .container { padding: 12px 8px; }
@@ -94,7 +100,11 @@
 </head>
 <body>
 <div class="container">
-  <h1>BTC Arbitrage Intelligence<span class="subtitle">Exchanges vs Chainlink vs Polymarket</span></h1>
+  <div class="tab-bar">
+    <button class="tab active" data-asset="btc" onclick="switchAsset('btc')">BTC</button>
+    <button class="tab" data-asset="eth" onclick="switchAsset('eth')">ETH</button>
+  </div>
+  <h1 id="dash-title">BTC Arbitrage Intelligence<span class="subtitle" id="dash-subtitle">Exchanges vs Chainlink vs Polymarket</span></h1>
 
   <div class="prices" style="grid-template-columns: 1fr 1fr;">
     <div class="panel binance">
@@ -175,7 +185,7 @@
   <!-- Futures & Spread -->
   <div class="prices" style="grid-template-columns: 1fr 1fr; margin-bottom:16px;">
     <div class="panel" style="border-color:#f0b90b33; min-height:150px;">
-      <div class="panel-label"><span class="dot" id="fut-dot"></span> Binance BTC Perp (futures)</div>
+      <div class="panel-label"><span class="dot" id="fut-dot"></span> <span id="fut-label">Binance BTC Perp (futures)</span></div>
       <div class="price" id="fut-price" style="color:#f0b90b;">—</div>
       <div class="sub" id="fut-sub">connecting...</div>
     </div>
@@ -225,15 +235,35 @@
 </div>
 
 <script>
+// ─── Asset Configuration ───
+const ASSETS = {
+  btc: {
+    label: 'BTC', name: 'Bitcoin', symbol: 'BTCUSDT', pair: 'BTC-USD', pairOKX: 'BTC-USDT',
+    tickerBybit: 'tickers.BTCUSDT', liqBybit: 'allLiquidation.BTCUSDT',
+    futSymbol: 'btcusdt', color: '#f0b90b', icon: '₿',
+    feedId: '0x00039d9e45394f473ab1f050a1b963e6b05351e52d71e507509ada0c95ed75b8',
+  },
+  eth: {
+    label: 'ETH', name: 'Ethereum', symbol: 'ETHUSDT', pair: 'ETH-USD', pairOKX: 'ETH-USDT',
+    tickerBybit: 'tickers.ETHUSDT', liqBybit: 'allLiquidation.ETHUSDT',
+    futSymbol: 'ethusdt', color: '#627eea', icon: 'Ξ',
+    feedId: '0x000359843a543ee2fe414dc14c7e7920ef10f4372990b79d6361cdc0dd1ba782',
+  },
+};
+
+let currentAsset = 'btc';
 let binPrice=null, clPrice=null, pmPrice=null, strike=null;
 let cbPrice=null, krPrice=null, okPrice=null, bbPrice=null;
 let upTokenId=null, downTokenId=null;
 let tickerLog=[], lagSamples=[], maxLag=0;
 
+// Track all websockets for cleanup on asset switch
+let activeSockets = [];
+
 const $=id=>document.getElementById(id);
 function fmt(p){return p?'$'+p.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}):'—';}
 function ts(){return new Date().toLocaleTimeString('en-US',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit',fractionalSecondDigits:3});}
-function addTick(msg,cls){tickerLog.unshift({time:ts(),msg,cls:cls||''});if(tickerLog.length>50)tickerLog.pop();$('ticker').innerHTML=tickerLog.map(t=>`<div class="ticker-row ${t.cls}"><span class="time">${t.time}</span><span class="evt">${t.msg}</span></div>`).join('');}
+function addTick(msg,cls){tickerLog.unshift({time:ts(),msg,cls:cls||''});if(tickerLog.length>50)tickerLog.pop();const el=$('ticker');if(el)el.innerHTML=tickerLog.map(t=>`<div class="ticker-row ${t.cls}"><span class="time">${t.time}</span><span class="evt">${t.msg}</span></div>`).join('');}
 
 function lagStr(ref, price) {
   if (!ref || !price) return '';
@@ -241,47 +271,105 @@ function lagStr(ref, price) {
   return (d>=0?'+':'')+d.toFixed(2);
 }
 
+function cfg() { return ASSETS[currentAsset]; }
+
+// ─── Asset Switching ───
+function switchAsset(asset) {
+  if (asset === currentAsset) return;
+  currentAsset = asset;
+  window.location.hash = asset;
+
+  // Update tab buttons
+  document.querySelectorAll('.tab-bar button').forEach(b => {
+    b.classList.toggle('active', b.dataset.asset === asset);
+  });
+
+  // Update titles and labels
+  const a = cfg();
+  $('dash-title').innerHTML = `${a.label} Arbitrage Intelligence<span class="subtitle" id="dash-subtitle">Exchanges vs Chainlink vs Polymarket</span>`;
+  document.querySelector('.binance .panel-label').innerHTML = `<span class="dot" id="bin-dot"></span> Binance ${a.label} Spot`;
+  document.querySelector('.chainlink .panel-label').innerHTML = `<span class="dot on" id="pm-dot"></span> Chainlink ${a.label}/USD`;
+  document.querySelector('.binance .price').style.color = a.color;
+  const futLabel=$('fut-label'); if(futLabel) futLabel.textContent=`Binance ${a.label} Perp (futures)`;
+
+  // Reset state
+  binPrice=null; clPrice=null; pmPrice=null; strike=null;
+  cbPrice=null; krPrice=null; okPrice=null; bbPrice=null;
+  tickerLog=[]; lagSamples=[]; maxLag=0;
+  candles.length=0;
+  spreadHistory=[]; spreadBaseline=null;
+  lastFeedKey='';
+
+  // Reset displays
+  ['bin-price','cl-price','fut-price','cb-price','kr-price','ok-price','bb-price'].forEach(id=>{const e=$(id);if(e)e.textContent='—';});
+  ['bin-sub','cl-sub','fut-sub'].forEach(id=>{const e=$(id);if(e)e.textContent='connecting...';});
+  ['cb-lag','kr-lag','ok-lag','bb-lag'].forEach(id=>{const e=$(id);if(e)e.textContent='';});
+  const bf=$('bot-feed');if(bf)bf.innerHTML='';
+  $('bot-status').textContent='—';
+  $('bot-pnl').textContent='—';
+
+  // Close all websockets and reconnect
+  closeAllSockets();
+  startAllConnections();
+}
+
+function closeAllSockets() {
+  activeSockets.forEach(ws => { try { ws.onclose=null; ws.close(); } catch(e){} });
+  activeSockets = [];
+  // Clear all intervals
+  if (window._pollIntervals) window._pollIntervals.forEach(id => clearInterval(id));
+  window._pollIntervals = [];
+}
+
+function trackSocket(ws) { activeSockets.push(ws); return ws; }
+function addInterval(fn, ms) { const id = setInterval(fn, ms); window._pollIntervals.push(id); return id; }
+
 // ─── Binance (websocket) ───
 function connectBinance(){
-  const ws=new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@trade');
-  ws.onopen=()=>{$('bin-dot').className='dot on';addTick('Binance connected');};
-  ws.onclose=()=>{$('bin-dot').className='dot off';setTimeout(connectBinance,2000);};
+  const a=cfg();
+  const ws=trackSocket(new WebSocket(`wss://stream.binance.com:9443/ws/${a.symbol.toLowerCase()}@trade`));
+  ws.onopen=()=>{$('bin-dot').className='dot on';addTick(`Binance ${a.label} connected`);};
+  ws.onclose=()=>{$('bin-dot').className='dot off';};
   ws.onerror=()=>ws.close();
   ws.onmessage=(e)=>{const d=JSON.parse(e.data);binPrice=parseFloat(d.p);$('bin-price').textContent=fmt(binPrice);$('bin-sub').textContent=ts();updateLag();};
 }
 
 // ─── Coinbase (websocket) ───
 function connectCoinbase(){
-  const ws=new WebSocket('wss://ws-feed.exchange.coinbase.com');
-  ws.onopen=()=>{ws.send(JSON.stringify({type:'subscribe',product_ids:['BTC-USD'],channels:['ticker']}));$('cb-dot').className='dot on';addTick('Coinbase connected');};
-  ws.onclose=()=>{$('cb-dot').className='dot off';setTimeout(connectCoinbase,3000);};
+  const a=cfg();
+  const ws=trackSocket(new WebSocket('wss://ws-feed.exchange.coinbase.com'));
+  ws.onopen=()=>{ws.send(JSON.stringify({type:'subscribe',product_ids:[a.pair],channels:['ticker']}));$('cb-dot').className='dot on';addTick(`Coinbase ${a.label} connected`);};
+  ws.onclose=()=>{$('cb-dot').className='dot off';};
   ws.onerror=()=>ws.close();
   ws.onmessage=(e)=>{const d=JSON.parse(e.data);if(d.type==='ticker'&&d.price){cbPrice=parseFloat(d.price);$('cb-price').textContent=fmt(cbPrice);$('cb-lag').textContent=binPrice?lagStr(binPrice,cbPrice)+' vs Bin':'';}};
 }
 
 // ─── Kraken (websocket v2) ───
 function connectKraken(){
-  const ws=new WebSocket('wss://ws.kraken.com/v2');
-  ws.onopen=()=>{ws.send(JSON.stringify({method:'subscribe',params:{channel:'ticker',symbol:['BTC/USD']}}));$('kr-dot').className='dot on';addTick('Kraken connected');};
-  ws.onclose=()=>{$('kr-dot').className='dot off';setTimeout(connectKraken,3000);};
+  const a=cfg();
+  const ws=trackSocket(new WebSocket('wss://ws.kraken.com/v2'));
+  ws.onopen=()=>{ws.send(JSON.stringify({method:'subscribe',params:{channel:'ticker',symbol:[a.pair.replace('-','/')]}}));$('kr-dot').className='dot on';addTick(`Kraken ${a.label} connected`);};
+  ws.onclose=()=>{$('kr-dot').className='dot off';};
   ws.onerror=()=>ws.close();
   ws.onmessage=(e)=>{try{const d=JSON.parse(e.data);if(d.channel==='ticker'&&d.data){const p=d.data[0];krPrice=parseFloat(p.last);$('kr-price').textContent=fmt(krPrice);$('kr-lag').textContent=binPrice?lagStr(binPrice,krPrice)+' vs Bin':'';}}catch(ex){}};
 }
 
 // ─── OKX (websocket) ───
 function connectOKX(){
-  const ws=new WebSocket('wss://ws.okx.com:8443/ws/v5/public');
-  ws.onopen=()=>{ws.send(JSON.stringify({op:'subscribe',args:[{channel:'tickers',instId:'BTC-USDT'}]}));$('ok-dot').className='dot on';addTick('OKX connected');};
-  ws.onclose=()=>{$('ok-dot').className='dot off';setTimeout(connectOKX,3000);};
+  const a=cfg();
+  const ws=trackSocket(new WebSocket('wss://ws.okx.com:8443/ws/v5/public'));
+  ws.onopen=()=>{ws.send(JSON.stringify({op:'subscribe',args:[{channel:'tickers',instId:a.pairOKX}]}));$('ok-dot').className='dot on';addTick(`OKX ${a.label} connected`);};
+  ws.onclose=()=>{$('ok-dot').className='dot off';};
   ws.onerror=()=>ws.close();
   ws.onmessage=(e)=>{try{const d=JSON.parse(e.data);if(d.data&&d.data[0]&&d.data[0].last){okPrice=parseFloat(d.data[0].last);$('ok-price').textContent=fmt(okPrice);$('ok-lag').textContent=binPrice?lagStr(binPrice,okPrice)+' vs Bin':'';}}catch(ex){}};
 }
 
 // ─── Bybit (websocket v5) ───
 function connectBybit(){
-  const ws=new WebSocket('wss://stream.bybit.com/v5/public/spot');
-  ws.onopen=()=>{ws.send(JSON.stringify({op:'subscribe',args:['tickers.BTCUSDT']}));$('bb-dot').className='dot on';addTick('Bybit connected');};
-  ws.onclose=()=>{$('bb-dot').className='dot off';setTimeout(connectBybit,3000);};
+  const a=cfg();
+  const ws=trackSocket(new WebSocket('wss://stream.bybit.com/v5/public/spot'));
+  ws.onopen=()=>{ws.send(JSON.stringify({op:'subscribe',args:[a.tickerBybit]}));$('bb-dot').className='dot on';addTick(`Bybit ${a.label} connected`);};
+  ws.onclose=()=>{$('bb-dot').className='dot off';};
   ws.onerror=()=>ws.close();
   ws.onmessage=(e)=>{try{const d=JSON.parse(e.data);if(d.data&&d.data.lastPrice){bbPrice=parseFloat(d.data.lastPrice);$('bb-price').textContent=fmt(bbPrice);$('bb-lag').textContent=binPrice?lagStr(binPrice,bbPrice)+' vs Bin':'';}}catch(ex){}};
 }
@@ -289,7 +377,7 @@ function connectBybit(){
 // ─── Polymarket Live Price (same Chainlink source, separate poll) ───
 async function pollPolymarket(){
   try{
-    const resp=await fetch('/api/chainlink?pm=1');
+    const resp=await fetch(`/api/chainlink?asset=${currentAsset}`);
     const data=await resp.json();
     const nodes=data?.data?.liveStreamReports?.nodes;
     if(nodes&&nodes.length>0){
@@ -305,7 +393,7 @@ async function pollPolymarket(){
 // ─── Chainlink (proxy poll) ───
 async function pollChainlink(){
   try{
-    const resp=await fetch('/api/chainlink');
+    const resp=await fetch(`/api/chainlink?asset=${currentAsset}`);
     const data=await resp.json();
     const nodes=data?.data?.liveStreamReports?.nodes;
     if(nodes&&nodes.length>0){
@@ -348,9 +436,10 @@ function resetWindowLiqs(){
 }
 
 function connectBinanceFutures(){
-  const ws=new WebSocket('wss://fstream.binance.com/ws/btcusdt@aggTrade');
-  ws.onopen=()=>{$('fut-dot').className='dot on';addTick('Binance Futures connected');};
-  ws.onclose=()=>{$('fut-dot').className='dot off';setTimeout(connectBinanceFutures,2000);};
+  const a=cfg();
+  const ws=trackSocket(new WebSocket(`wss://fstream.binance.com/ws/${a.futSymbol}@aggTrade`));
+  ws.onopen=()=>{$('fut-dot').className='dot on';addTick(`Binance ${a.label} Futures connected`);};
+  ws.onclose=()=>{$('fut-dot').className='dot off';};
   ws.onerror=()=>ws.close();
   ws.onmessage=(e)=>{
     try{
@@ -400,9 +489,10 @@ function updateSpread(){
 
 // ─── Bybit Liquidations (websocket) ───
 function connectBybitLiqs(){
-  const ws=new WebSocket('wss://stream.bybit.com/v5/public/linear');
+  const a=cfg();
+  const ws=trackSocket(new WebSocket('wss://stream.bybit.com/v5/public/linear'));
   ws.onopen=()=>{
-    ws.send(JSON.stringify({op:'subscribe',args:['allLiquidation.BTCUSDT']}));
+    ws.send(JSON.stringify({op:'subscribe',args:[a.liqBybit]}));
     addTick('Bybit liquidations connected');
   };
   ws.onclose=()=>{setTimeout(connectBybitLiqs,3000);};
@@ -410,7 +500,7 @@ function connectBybitLiqs(){
   ws.onmessage=(e)=>{
     try{
       const d=JSON.parse(e.data);
-      if(d.topic==='allLiquidation.BTCUSDT'&&d.data){
+      if(d.data&&d.topic&&d.topic.startsWith('allLiquidation')&&d.data){
         resetWindowLiqs();
         for(const liq of d.data){
           const side=liq.S;  // "Buy" = long liq'd, "Sell" = short liq'd
@@ -438,7 +528,8 @@ function connectBybitLiqs(){
 
 // ─── Binance Forced Liquidations ───
 function connectBinanceLiqs(){
-  const ws=new WebSocket('wss://fstream.binance.com/ws/btcusdt@forceOrder');
+  const a=cfg();
+  const ws=trackSocket(new WebSocket(`wss://fstream.binance.com/ws/${a.futSymbol}@forceOrder`));
   ws.onopen=()=>{addTick('Binance liquidations connected');};
   ws.onclose=()=>{setTimeout(connectBinanceLiqs,3000);};
   ws.onerror=()=>ws.close();
@@ -470,7 +561,7 @@ function connectBinanceLiqs(){
 // ─── Funding Rate (poll every 30s) ───
 async function pollFunding(){
   try{
-    const resp=await fetch('https://fapi.binance.com/fapi/v1/premiumIndex?symbol=BTCUSDT');
+    const resp=await fetch(`https://fapi.binance.com/fapi/v1/premiumIndex?symbol=${cfg().symbol}`);
     const d=await resp.json();
     if(d.lastFundingRate){
       const rate=parseFloat(d.lastFundingRate)*100;
@@ -507,18 +598,28 @@ function updateLag(){
   }
 }
 
-// ─── Init ───
-connectBinance();
-connectCoinbase();
-connectKraken();
-connectOKX();
-connectBybit();
-pollPolymarket();
-pollChainlink();
-pollTokens();
-pollFunding();
-connectBinanceFutures();
-// Liquidation data now served via lag-server (browser websockets blocked by exchanges)
+// ─── Start/Restart All Connections ───
+function startAllConnections(){
+  connectBinance();
+  connectCoinbase();
+  connectKraken();
+  connectOKX();
+  connectBybit();
+  pollPolymarket();
+  pollChainlink();
+  pollTokens();
+  pollFunding();
+  connectBinanceFutures();
+  addInterval(pollPolymarket,3000);
+  addInterval(pollChainlink,1000);
+  addInterval(pollTokens,5000);
+  addInterval(pollFunding,30000);
+  addInterval(pollBotFeed,2000);
+  pollLiveState();
+  bootstrapCandles();
+  pollBotFeed();
+}
+
 async function pollLiveState(){
   try{
     const r=await fetch('/api/futures-live');
@@ -550,12 +651,6 @@ async function pollLiveState(){
   }catch(e){}
   setTimeout(pollLiveState,2000);
 }
-pollLiveState();
-setInterval(pollPolymarket,3000);
-setInterval(pollChainlink,1000);
-setInterval(pollTokens,5000);
-setInterval(pollFunding,30000);
-
 // ─── Trend Insights (real-time from Binance 1m klines) ───
 const candles=[];  // {o,h,l,c,v,t}
 const MAX_CANDLES=30;
@@ -563,7 +658,7 @@ const MAX_CANDLES=30;
 // Bootstrap with historical candles then stream live
 async function bootstrapCandles(){
   try{
-    const r=await fetch('https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=30');
+    const r=await fetch(`https://api.binance.com/api/v3/klines?symbol=${cfg().symbol}&interval=1m&limit=30`);
     const data=await r.json();
     for(const k of data){
       candles.push({o:+k[1],h:+k[2],l:+k[3],c:+k[4],v:+k[5],t:k[0]});
@@ -575,7 +670,7 @@ async function bootstrapCandles(){
 }
 
 function connectKline(){
-  const ws=new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@kline_1m');
+  const ws=trackSocket(new WebSocket(`wss://stream.binance.com:9443/ws/${cfg().symbol.toLowerCase()}@kline_1m`));
   ws.onopen=()=>addTick('Kline feed connected');
   ws.onclose=()=>setTimeout(connectKline,3000);
   ws.onerror=()=>ws.close();
@@ -735,13 +830,11 @@ function computeTrend(){
   $('regime-direction').textContent=dirLabel;
   $('regime-direction').style.color=dirColor;
 }
-bootstrapCandles();
-
 // Bot activity feed
 let lastFeedKey='';
 async function pollBotFeed(){
   try{
-    const r=await fetch('/api/tail?n=20');
+    const r=await fetch(`/api/tail?n=20&asset=${currentAsset}`);
     const d=await r.json();
     if(!d.lines||d.lines.length===0) return;
     const key=d.lines.join('');
@@ -790,8 +883,19 @@ async function pollBotFeed(){
     requestAnimationFrame(()=>el.scrollTop=el.scrollHeight+100);
   }catch(e){}
 }
-pollBotFeed();
-setInterval(pollBotFeed,2000);
+// ─── Init ───
+// Load asset from URL hash
+const hashAsset = window.location.hash.replace('#','').toLowerCase();
+if (hashAsset && ASSETS[hashAsset]) {
+  currentAsset = hashAsset;
+  document.querySelectorAll('.tab-bar button').forEach(b => {
+    b.classList.toggle('active', b.dataset.asset === currentAsset);
+  });
+  // Update labels for initial asset
+  const initA = cfg();
+  $('dash-title').innerHTML = `${initA.label} Arbitrage Intelligence<span class="subtitle" id="dash-subtitle">Exchanges vs Chainlink vs Polymarket</span>`;
+}
+startAllConnections();
 </script>
 </body>
 </html>

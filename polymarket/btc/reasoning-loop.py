@@ -1565,7 +1565,7 @@ def run_loop(dry_run=False, live=False):
                             ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
                             print(f"  [{ts}]   🔄 Triggering browser-based redemption...", flush=True)
                             r = subprocess.run(
-                                [str(BOT_DIR / "redeem-browser.sh")],
+                                [str(BOT_DIR.parent / "shared" / "redeem-browser.sh")],
                                 capture_output=True, text=True, timeout=15
                             )
                             if r.returncode == 0:
