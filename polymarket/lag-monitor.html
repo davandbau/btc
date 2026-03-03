@@ -3,97 +3,130 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>BTC Price Lag Monitor</title>
+<title>BTC Arbitrage Intelligence</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>₿</text></svg>">
 <style>
   @import url('https://api.fontshare.com/v2/css?f[]=satoshi@300,400,500,600,700&display=swap');
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { background: #0a0a0a; color: #e0e0e0; font-family: 'Satoshi', sans-serif; font-feature-settings: 'tnum' 1; }
+  body { background: #15191d; color: #dee3e7; font-family: 'Satoshi', sans-serif; font-feature-settings: 'tnum' 1; }
   .container { max-width: 1100px; margin: 0 auto; padding: 20px; }
-  h1 { font-size: 14px; color: #888; text-transform: uppercase; letter-spacing: 2px; margin-bottom: 20px; text-align: center; }
+  h1 { font-size: 24px; color: #f0f2f5; font-weight: 600; letter-spacing: 0; margin-bottom: 4px; text-align: left; }
+  h1 .subtitle { display: block; font-size: 16px; color: #7b8996; font-weight: 400; margin-top: 4px; margin-bottom: 16px; }
 
   .prices { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; margin-bottom: 16px; }
-  .panel { background: #111; border: 1px solid #2a2a2a; border-radius: 8px; padding: 20px; }
-  .panel-label { font-size: 10px; color: #777; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
-  .price { font-size: 28px; font-weight: 500; letter-spacing: -0.3px; }
-  .sub { font-size: 11px; color: #888; margin-top: 4px; }
+  .panel { background: #1e2428; border: 1px solid #242b32; border-radius: 8px; padding: 12px 16px; }
+  .panel-label { font-size: 14px; color: #7b8996; letter-spacing: 0.3px; margin-bottom: 8px; }
+  .price { font-size: 32px; font-weight: 500; letter-spacing: -0.3px; }
+  .sub { font-size: 16px; color: #7b8996; margin-top: 4px; }
   .binance .price { color: #f0b90b; }
   .chainlink .price { color: #375bd2; }
   .polymarket .price { color: #ff6b00; }
 
   .exchanges { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
-  .ex { background: #111; border: 1px solid #252525; border-radius: 6px; padding: 12px; }
-  .ex-name { font-size: 9px; color: #777; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px; }
-  .ex-price { font-size: 16px; font-weight: 500; color: #ddd; }
-  .ex-lag { font-size: 10px; color: #777; margin-top: 2px; }
+  .ex { background: #1e2428; border: 1px solid #242b32; border-radius: 6px; padding: 12px; }
+  .ex-name { font-size: 16px; color: #7b8996; letter-spacing: 0.3px; margin-bottom: 4px; }
+  .ex-price { font-size: 18px; font-weight: 500; color: #dee3e7; }
+  .ex-lag { font-size: 14px; color: #7b8996; margin-top: 2px; }
 
-  .lag-bar { background: #111; border: 1px solid #2a2a2a; border-radius: 8px; padding: 20px; text-align: center; margin-bottom: 16px; }
-  .lag-label { font-size: 10px; color: #777; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px; }
-  .lag-value { font-size: 42px; font-weight: 500; }
-  .lag-unit { font-size: 12px; color: #777; margin-left: 4px; }
-  .lag-desc { font-size: 12px; margin-top: 6px; color: #777; }
+  .lag-bar { background: #1e2428; border: 1px solid #242b32; border-radius: 8px; padding: 12px 16px; text-align: center; margin-bottom: 16px; }
+  .lag-label { font-size: 14px; color: #7b8996; letter-spacing: 0.3px; margin-bottom: 6px; }
+  .lag-value { font-size: 36px; font-weight: 500; }
+  .lag-unit { font-size: 14px; color: #7b8996; margin-left: 4px; }
+  .lag-desc { font-size: 14px; margin-top: 6px; color: #7b8996; }
 
   .bottom { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
-  .info-box { background: #111; border: 1px solid #2a2a2a; border-radius: 8px; padding: 14px; }
+  .info-box { background: #1e2428; border: 1px solid #242b32; border-radius: 8px; padding: 14px; min-height: 180px; }
   .info-row { display: flex; justify-content: space-between; align-items: center; padding: 3px 0; }
-  .info-label { font-size: 11px; color: #777; }
-  .info-value { font-size: 13px; font-weight: 400; }
-  .green { color: #22c55e; }
+  .info-label { font-size: 16px; color: #7b8996; }
+  .info-value { font-size: 16px; font-weight: 400; }
+  .green { color: #3db468; }
   .red { color: #ef4444; }
 
-  .ticker { background: #111; border: 1px solid #2a2a2a; border-radius: 8px; padding: 10px 16px; max-height: 150px; overflow-y: auto; }
-  .ticker-row { font-size: 10px; color: #888; padding: 2px 0; display: flex; gap: 10px; }
-  .ticker-row .time { color: #555; min-width: 85px; }
-  .ticker-row .evt { color: #777; }
-  .ticker-row.arb .evt { color: #22c55e; font-weight: 600; }
+  .ticker { background: #1e2428; border: 1px solid #242b32; border-radius: 8px; padding: 10px 16px; max-height: 150px; overflow-y: auto; }
+  .ticker-row { font-size: 14px; color: #7b8996; padding: 2px 0; display: flex; gap: 10px; }
+  .ticker-row .time { color: #586879; min-width: 85px; }
+  .ticker-row .evt { color: #7b8996; }
+  .ticker-row.arb .evt { color: #3db468; font-weight: 600; }
   .ticker-row.lag .evt { color: #f0b90b; }
 
   .status { display: flex; gap: 12px; justify-content: center; margin-top: 12px; flex-wrap: wrap; }
-  .dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 3px; vertical-align: middle; }
-  .dot.on { background: #22c55e; }
+  .dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 4px; vertical-align: baseline; position: relative; top: -2px; }
+  .dot.on { background: #3db468; }
   .dot.off { background: #ef4444; }
-  .status span { font-size: 10px; color: #888; }
+  .tip-wrap { position: relative; display: inline-block; }
+  .tip-wrap::after { content: attr(data-tip); position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%); background: #242b32; color: #dee3e7; font-size: 13px; line-height: 1.5; padding: 10px 14px; border-radius: 8px; border: 1px solid #3a4450; white-space: normal; width: 240px; pointer-events: none; opacity: 0; transition: opacity 0.15s ease; z-index: 10; box-shadow: 0 4px 12px rgba(0,0,0,0.4); font-weight: 400; letter-spacing: 0; }
+  .tip-wrap::before { content: ''; position: absolute; bottom: calc(100% + 2px); left: 50%; transform: translateX(-50%); border: 6px solid transparent; border-top-color: #242b32; pointer-events: none; opacity: 0; transition: opacity 0.15s ease; z-index: 10; }
+  .tip-wrap:hover::after, .tip-wrap:hover::before { opacity: 1; }
+  .trend-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  .status span { font-size: 14px; color: #888; }
+
+  /* Mobile responsive */
+  @media (max-width: 768px) {
+    .container { padding: 12px 8px; }
+    h1 { font-size: 20px; }
+    h1 .subtitle { font-size: 14px; }
+    .prices { grid-template-columns: 1fr 1fr; gap: 10px; }
+    .exchanges { grid-template-columns: 1fr 1fr; gap: 10px; }
+    .price { font-size: 24px; }
+    .sub { font-size: 14px; }
+    .lag-value { font-size: 28px; }
+    .bottom { grid-template-columns: 1fr; }
+    .info-label, .info-value { font-size: 14px; }
+    .ex-price { font-size: 16px; }
+    .panel { padding: 10px 12px; }
+    .panel-label { font-size: 13px; }
+    #bot-feed { max-height: 350px; font-size: 11px !important; line-height: 1.6 !important; }
+    #bot-feed div { font-size: 11px !important; }
+    .tip-wrap::after { width: 180px; font-size: 12px; }
+    .status { gap: 8px; }
+    .status span { font-size: 12px; }
+    .trend-grid { grid-template-columns: 1fr 1fr !important; }
+  }
+
+  @media (max-width: 480px) {
+    .exchanges { grid-template-columns: 1fr 1fr; }
+    .price { font-size: 22px; }
+    .lag-value { font-size: 24px; }
+    #bot-feed { max-height: 400px; }
+    .trend-grid { grid-template-columns: 1fr 1fr !important; }
+  }
 </style>
 </head>
 <body>
 <div class="container">
-  <h1>BTC Price Lag — Exchanges vs Chainlink vs Polymarket</h1>
+  <h1>BTC Arbitrage Intelligence<span class="subtitle">Exchanges vs Chainlink vs Polymarket</span></h1>
 
-  <div class="prices">
+  <div class="prices" style="grid-template-columns: 1fr 1fr;">
     <div class="panel binance">
-      <div class="panel-label">Binance BTC/USDT (websocket)</div>
+      <div class="panel-label"><span class="dot" id="bin-dot"></span> Binance BTC Spot</div>
       <div class="price" id="bin-price">—</div>
       <div class="sub" id="bin-sub">connecting...</div>
     </div>
     <div class="panel chainlink">
-      <div class="panel-label">Chainlink BTC/USD</div>
+      <div class="panel-label"><span class="dot on" id="pm-dot"></span> Chainlink BTC/USD</div>
       <div class="price" id="cl-price">—</div>
       <div class="sub" id="cl-sub">loading...</div>
-    </div>
-    <div class="panel polymarket">
-      <div class="panel-label">Polymarket / Chainlink</div>
-      <div class="price" id="pm-price">—</div>
-      <div class="sub" id="pm-sub">connecting...</div>
     </div>
   </div>
 
   <div class="exchanges">
     <div class="ex">
-      <div class="ex-name">Coinbase</div>
+      <div class="ex-name"><span class="dot" id="cb-dot"></span> Coinbase</div>
       <div class="ex-price" id="cb-price">—</div>
       <div class="ex-lag" id="cb-lag"></div>
     </div>
     <div class="ex">
-      <div class="ex-name">Kraken</div>
+      <div class="ex-name"><span class="dot" id="kr-dot"></span> Kraken</div>
       <div class="ex-price" id="kr-price">—</div>
       <div class="ex-lag" id="kr-lag"></div>
     </div>
     <div class="ex">
-      <div class="ex-name">OKX</div>
+      <div class="ex-name"><span class="dot" id="ok-dot"></span> OKX</div>
       <div class="ex-price" id="ok-price">—</div>
       <div class="ex-lag" id="ok-lag"></div>
     </div>
     <div class="ex">
-      <div class="ex-name">Bybit</div>
+      <div class="ex-name"><span class="dot" id="bb-dot"></span> Bybit</div>
       <div class="ex-price" id="bb-price">—</div>
       <div class="ex-lag" id="bb-lag"></div>
     </div>
@@ -108,54 +141,87 @@
     <div class="lag-desc" id="lag-desc">waiting for both feeds</div>
   </div>
 
+  <!-- Trend Insights -->
+  <div style="margin-bottom:16px;">
+    <div class="lag-label" style="margin-bottom:10px; padding:0 4px;">Trend Insights</div>
+    <div class="trend-grid">
+      <div class="panel" style="grid-column: span 2;">
+        <div class="panel-label"><span class="tip-wrap" data-tip="Hurst exponent. Below 0.45 = choppy. Above 0.55 = trending.">Regime</span></div>
+        <div style="font-size:18px;font-weight:500;" id="regime-label">—</div>
+        <div style="font-size:12px;color:#586879;margin-top:2px;" id="regime-hurst">Hurst: —</div>
+      </div>
+      <div class="panel">
+        <div class="panel-label"><span class="tip-wrap" data-tip="Average Directional Index. Above 25 = strong trend. Below 20 = ranging.">ADX</span></div>
+        <div style="font-size:18px;font-weight:500;" id="regime-adx">—</div>
+        <div style="font-size:12px;color:#586879;margin-top:2px;" id="regime-di">DI+/DI-: —</div>
+      </div>
+      <div class="panel">
+        <div class="panel-label"><span class="tip-wrap" data-tip="Choppiness Index. Above 61.8 = choppy. Below 38.2 = trending.">Choppiness</span></div>
+        <div style="font-size:18px;font-weight:500;" id="regime-chop">—</div>
+        <div style="font-size:12px;color:#586879;margin-top:2px;" id="regime-chop-signal">—</div>
+      </div>
+      <div class="panel">
+        <div class="panel-label"><span class="tip-wrap" data-tip="Current ATR vs average. Above 1.2x = expanding. Below 0.8x = contracting.">ATR Ratio</span></div>
+        <div style="font-size:18px;font-weight:500;" id="regime-atr">—</div>
+        <div style="font-size:12px;color:#586879;margin-top:2px;" id="regime-atr-signal">—</div>
+      </div>
+      <div class="panel">
+        <div class="panel-label"><span class="tip-wrap" data-tip="Composite score across all indicators.">Verdict</span></div>
+        <div style="font-size:18px;font-weight:600;" id="regime-verdict">—</div>
+        <div style="font-size:12px;color:#586879;margin-top:2px;" id="regime-direction">—</div>
+      </div>
+    </div>
+  </div>
+  <!-- Futures & Spread -->
   <div class="prices" style="grid-template-columns: 1fr 1fr; margin-bottom:16px;">
-    <div class="panel" style="border-color:#f0b90b33;">
-      <div class="panel-label">Binance BTC Perp (futures)</div>
+    <div class="panel" style="border-color:#f0b90b33; min-height:150px;">
+      <div class="panel-label"><span class="dot" id="fut-dot"></span> Binance BTC Perp (futures)</div>
       <div class="price" id="fut-price" style="color:#f0b90b;">—</div>
       <div class="sub" id="fut-sub">connecting...</div>
     </div>
-    <div class="panel" id="spread-panel">
+    <div class="panel" id="spread-panel" style="min-height:150px;">
       <div class="panel-label">Futures → Spot Spread</div>
       <div class="price" id="fut-spread" style="font-size:32px;">—</div>
       <div class="sub" id="spread-direction" style="line-height:1.6;">waiting for both feeds</div>
     </div>
   </div>
 
-  <div class="lag-bar" id="liq-bar" style="text-align:left; padding:20px;">
+  <!-- Bot Activity Feed -->
+  <div class="lag-bar" style="text-align:left; padding:20px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+      <div class="lag-label" style="margin-bottom:0;"><span class="tip-wrap" data-tip="Live tail of the reasoning bot log. Shows delta samples, trade decisions, passes, and win/loss results in real-time.">Bot Activity</span></div>
+      <div style="display:flex; gap:12px; font-size:12px;">
+        <span id="bot-status" style="color:#586879;">—</span>
+        <span id="bot-pnl" style="color:#586879;">—</span>
+      </div>
+    </div>
+    <div id="bot-feed" style="font-size:12px; color:#7b8996; max-height:280px; overflow-y:auto; line-height:1.8; border-top:1px solid #242b32; padding:12px 0 8px 0;"></div>
+  </div>
+
+  <!-- Liquidations (hidden, data still collected) -->
+  <div class="lag-bar" id="liq-bar" style="display:none; text-align:left; padding:20px;">
     <div class="lag-label" style="margin-bottom:12px;">Live Liquidations</div>
     <div style="display:grid; grid-template-columns:1fr 1fr 1fr 1fr; gap:16px; margin-bottom:14px;">
       <div>
-        <div style="font-size:10px;color:#777;margin-bottom:4px;">Window Longs Liq'd</div>
+        <div style="font-size:10px;color:#7b8996;margin-bottom:4px;">Window Longs Liq'd</div>
         <div style="font-size:22px;font-weight:500;" class="red" id="liq-long">$0</div>
       </div>
       <div>
-        <div style="font-size:10px;color:#777;margin-bottom:4px;">Window Shorts Liq'd</div>
+        <div style="font-size:10px;color:#7b8996;margin-bottom:4px;">Window Shorts Liq'd</div>
         <div style="font-size:22px;font-weight:500;" class="green" id="liq-short">$0</div>
       </div>
       <div>
-        <div style="font-size:10px;color:#777;margin-bottom:4px;">Net Pressure</div>
+        <div style="font-size:10px;color:#7b8996;margin-bottom:4px;">Net Pressure</div>
         <div style="font-size:22px;font-weight:500;" id="liq-net">—</div>
       </div>
       <div>
-        <div style="font-size:10px;color:#777;margin-bottom:4px;">Funding Rate</div>
+        <div style="font-size:10px;color:#7b8996;margin-bottom:4px;">Funding Rate</div>
         <div style="font-size:22px;font-weight:500;" id="fut-funding">—</div>
       </div>
     </div>
-    <div id="liq-feed" style="font-size:10px; color:#888; max-height:100px; overflow-y:auto; line-height:1.6;"></div>
   </div>
 
-  <div class="ticker" id="ticker"></div>
-
-  <div class="status">
-    <span><span class="dot" id="bin-dot"></span> Binance</span>
-    <span><span class="dot" id="cb-dot"></span> Coinbase</span>
-    <span><span class="dot" id="kr-dot"></span> Kraken</span>
-    <span><span class="dot" id="ok-dot"></span> OKX</span>
-    <span><span class="dot" id="bb-dot"></span> Bybit</span>
-    <span><span class="dot" id="cl-dot"></span> Chainlink</span>
-    <span><span class="dot" id="pm-dot"></span> Polymarket</span>
-    <span><span class="dot" id="fut-dot"></span> Futures Feed</span>
-  </div>
+  <!-- Status dots moved inline to panel labels -->
 </div>
 
 <script>
@@ -228,12 +294,12 @@ async function pollPolymarket(){
     const nodes=data?.data?.liveStreamReports?.nodes;
     if(nodes&&nodes.length>0){
       pmPrice=parseFloat(nodes[0].price)/1e18;
-      $('pm-price').textContent=fmt(pmPrice);
-      $('pm-sub').textContent=nodes[0].validFromTimestamp.split('T')[1].replace('+00:00','')+' UTC';
+      if($('pm-price')) $('pm-price').textContent=fmt(pmPrice);
+      const pmSub=$('pm-sub'); if(pmSub) pmSub.textContent=nodes[0].validFromTimestamp.split('T')[1].replace('+00:00','')+' UTC';
       $('pm-dot').className='dot on';
       updateLag();
     }
-  }catch(e){$('pm-dot').className='dot off';}
+  }catch(e){/* keep last dot state on transient errors */}
 }
 
 // ─── Chainlink (proxy poll) ───
@@ -246,9 +312,9 @@ async function pollChainlink(){
       clPrice=parseFloat(nodes[0].price)/1e18;
       $('cl-price').textContent=fmt(clPrice);
       $('cl-sub').textContent=nodes[0].validFromTimestamp.split('T')[1].replace('+00:00','')+' UTC';
-      $('cl-dot').className='dot on';
+      $('cl-dot-unused').className='dot on';
     }
-  }catch(e){$('cl-dot').className='dot off';}
+  }catch(e){$('cl-dot-unused').className='dot off';}
 }
 
 // ─── Tokens + Strike ───
@@ -324,7 +390,7 @@ function updateSpread(){
   if(absDelta<2){
     label=`Flat (base: ${spread.toFixed(0)})`;color='#555';
   }else if(delta>0){
-    label=`Spread widening → Bullish shift ▲`;color='#22c55e';
+    label=`Spread widening → Bullish shift ▲`;color='#3db468';
   }else{
     label=`Spread narrowing → Bearish shift ▼`;color='#ef4444';
   }
@@ -363,8 +429,8 @@ function connectBybitLiqs(){
         $('liq-short').textContent='$'+windowShortLiq.toLocaleString('en-US',{maximumFractionDigits:0});
         const net=windowShortLiq-windowLongLiq;
         $('liq-net').textContent=(net>=0?'+':'')+Math.round(net/1000)+'K';
-        $('liq-net').style.color=net>10000?'#22c55e':net<-10000?'#ef4444':'#888';
-        $('liq-feed').innerHTML=liqFeed.map(l=>`<div style="padding:1px 0;"><span style="color:#555;margin-right:8px;">${l.time}</span>${l.text}</div>`).join('');
+        $('liq-net').style.color=net>10000?'#3db468':net<-10000?'#ef4444':'#888';
+        
       }
     }catch(ex){}
   };
@@ -391,11 +457,11 @@ function connectBinanceLiqs(){
       $('liq-short').textContent='$'+windowShortLiq.toLocaleString('en-US',{maximumFractionDigits:0});
       const net=windowShortLiq-windowLongLiq;
       $('liq-net').textContent=(net>=0?'+':'')+Math.round(net/1000)+'K';
-      $('liq-net').style.color=net>10000?'#22c55e':net<-10000?'#ef4444':'#888';
+      $('liq-net').style.color=net>10000?'#3db468':net<-10000?'#ef4444':'#888';
       const emoji=dir==='LONG'?'🔻':'🔺';
       const entry={time:ts(),text:`${emoji} ${dir} liq $${(usd/1000).toFixed(1)}K @ ${fmt(price)} (Bin)`};
       liqFeed.unshift(entry);if(liqFeed.length>20)liqFeed.pop();
-      $('liq-feed').innerHTML=liqFeed.map(l=>`<div style="padding:1px 0;"><span style="color:#555;margin-right:8px;">${l.time}</span>${l.text}</div>`).join('');
+      
       if(usd>50000)addTick(`💥 ${dir} liquidation $${(usd/1000).toFixed(0)}K (Binance)`,dir==='LONG'?'lag':'arb');
     }catch(ex){}
   };
@@ -409,7 +475,7 @@ async function pollFunding(){
     if(d.lastFundingRate){
       const rate=parseFloat(d.lastFundingRate)*100;
       $('fut-funding').textContent=rate.toFixed(4)+'%';
-      $('fut-funding').style.color=rate>0?'#22c55e':rate<0?'#ef4444':'#888';
+      $('fut-funding').style.color=rate>0?'#3db468':rate<0?'#ef4444':'#888';
     }
   }catch(e){}
 }
@@ -428,7 +494,7 @@ function updateLag(){
     $('lag-unit').textContent='USD';
     if(abs<10){$('lag-desc').textContent=`In sync (${[binPrice,cbPrice,krPrice,okPrice,bbPrice].filter(p=>p!=null).length} exchanges)`;$('lag-value').style.color='#ccc';}
     else if(abs<50){$('lag-desc').textContent=`${diff>0?'Exchanges':'Polymarket'} lead`;$('lag-value').style.color='#4a9eff';}
-    else{$('lag-desc').textContent=`${diff>0?'Exchanges':'Polymarket'} lead — LARGE LAG`;$('lag-value').style.color='#22c55e';addTick(`LAG $${abs.toFixed(0)}: Avg ${fmt(avg)} vs PM ${fmt(pmPrice)}`,'lag');}
+    else{$('lag-desc').textContent=`${diff>0?'Exchanges':'Polymarket'} lead — LARGE LAG`;$('lag-value').style.color='#3db468';addTick(`LAG $${abs.toFixed(0)}: Avg ${fmt(avg)} vs PM ${fmt(pmPrice)}`,'lag');}
     lagSamples.push(abs);if(lagSamples.length>1000)lagSamples.shift();
     if(abs>maxLag){maxLag=abs;if(abs>30)addTick(`Max lag: ${fmt(abs)}`,'lag');}
     $('max-lag').textContent=fmt(maxLag);
@@ -437,7 +503,7 @@ function updateLag(){
   if(strike&&avg){
     const sd=avg-strike;
     $('strike-delta').textContent=(sd>=0?'+':'')+sd.toFixed(2);
-    $('strike-delta').style.color=sd>0?'#22c55e':sd<0?'#ef4444':'#555';
+    $('strike-delta').style.color=sd>0?'#3db468':sd<0?'#ef4444':'#555';
   }
 }
 
@@ -464,7 +530,7 @@ async function pollLiveState(){
       $('liq-short').textContent='$'+windowShortLiq.toLocaleString('en-US',{maximumFractionDigits:0});
       const net=d.net_pressure||0;
       $('liq-net').textContent=(net>=0?'+':'')+Math.round(net/1000)+'K';
-      $('liq-net').style.color=net>10000?'#22c55e':net<-10000?'#ef4444':'#888';
+      $('liq-net').style.color=net>10000?'#3db468':net<-10000?'#ef4444':'#888';
       // Update liq feed from recent events
       if(d.recent_liqs&&d.recent_liqs.length){
         liqFeed=d.recent_liqs.map(l=>{
@@ -474,21 +540,258 @@ async function pollLiveState(){
           const time=t.toTimeString().slice(0,8);
           return{time,text:`${emoji} ${dir} liq $${(l.usd/1000).toFixed(1)}K (${l.exchange})`};
         }).reverse();
-        $('liq-feed').innerHTML=liqFeed.map(l=>`<div style="padding:1px 0;"><span style="color:#555;margin-right:8px;">${l.time}</span>${l.text}</div>`).join('');
+        
       }
     }
     if(d.spread!==undefined&&d.spread!==null){
       $('fut-spread').textContent=(d.spread>=0?'+':'')+d.spread.toFixed(2);
-      $('fut-spread').style.color=d.spread>0?'#22c55e':'#ef4444';
+      $('fut-spread').style.color=d.spread>0?'#3db468':'#ef4444';
     }
   }catch(e){}
   setTimeout(pollLiveState,2000);
 }
 pollLiveState();
-setInterval(pollPolymarket,500);
+setInterval(pollPolymarket,3000);
 setInterval(pollChainlink,1000);
 setInterval(pollTokens,5000);
 setInterval(pollFunding,30000);
+
+// ─── Trend Insights (real-time from Binance 1m klines) ───
+const candles=[];  // {o,h,l,c,v,t}
+const MAX_CANDLES=30;
+
+// Bootstrap with historical candles then stream live
+async function bootstrapCandles(){
+  try{
+    const r=await fetch('https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=30');
+    const data=await r.json();
+    for(const k of data){
+      candles.push({o:+k[1],h:+k[2],l:+k[3],c:+k[4],v:+k[5],t:k[0]});
+    }
+    if(candles.length>=8) computeTrend();
+    addTick(`Loaded ${candles.length} historical candles`);
+  }catch(e){addTick('Failed to load historical candles');}
+  connectKline();
+}
+
+function connectKline(){
+  const ws=new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@kline_1m');
+  ws.onopen=()=>addTick('Kline feed connected');
+  ws.onclose=()=>setTimeout(connectKline,3000);
+  ws.onerror=()=>ws.close();
+  ws.onmessage=(e)=>{
+    const d=JSON.parse(e.data);
+    const k=d.k;
+    const candle={o:+k.o,h:+k.h,l:+k.l,c:+k.c,v:+k.v,t:k.t};
+    // Update or append
+    if(candles.length>0 && candles[candles.length-1].t===candle.t){
+      candles[candles.length-1]=candle;
+    } else {
+      candles.push(candle);
+      if(candles.length>MAX_CANDLES) candles.shift();
+    }
+    if(candles.length>=8) computeTrend();
+  };
+}
+
+function emaCalc(data,period){
+  if(data.length<period) return data.reduce((a,b)=>a+b,0)/data.length;
+  const mult=2/(period+1);
+  let val=data.slice(0,period).reduce((a,b)=>a+b,0)/period;
+  for(let i=period;i<data.length;i++) val=(data[i]-val)*mult+val;
+  return val;
+}
+
+function computeTrend(){
+  const closes=candles.map(c=>c.c);
+  const highs=candles.map(c=>c.h);
+  const lows=candles.map(c=>c.l);
+  const n=closes.length;
+
+  // Hurst exponent
+  let hurst=null, hurstRegime='—';
+  if(n>=8){
+    const returns=[];
+    for(let i=1;i<n;i++) returns.push(closes[i]-closes[i-1]);
+    const mean=returns.reduce((a,b)=>a+b,0)/returns.length;
+    const devs=returns.map(r=>r-mean);
+    let cum=0; const cumDevs=devs.map(d=>(cum+=d,cum));
+    const R=Math.max(...cumDevs)-Math.min(...cumDevs);
+    const S=Math.sqrt(devs.reduce((a,d)=>a+d*d,0)/devs.length);
+    if(S>0&&R>0){
+      hurst=Math.log(R/S)/Math.log(returns.length);
+      hurstRegime=hurst<0.45?'mean_reverting':hurst>0.55?'trending':'random_walk';
+    }
+  }
+  const regimeLabel={'mean_reverting':'Ranging','trending':'Trending','random_walk':'Random Walk'};
+  const regimeColor={'mean_reverting':'#ef4444','trending':'#3db468','random_walk':'#f0b90b'};
+  $('regime-label').textContent=regimeLabel[hurstRegime]||'—';
+  $('regime-label').style.color=regimeColor[hurstRegime]||'#dee3e7';
+  $('regime-hurst').textContent=hurst!=null?`Hurst: ${hurst.toFixed(3)}`:'Hurst: —';
+
+  // ADX / DI+ / DI- / ATR
+  let adx=null, diPlus=null, diMinus=null, atrRatio=null, atrSignal='—';
+  if(n>=10){
+    const period=Math.min(14,n-1);
+    const plusDM=[],minusDM=[],trList=[];
+    for(let i=1;i<n;i++){
+      const hDiff=highs[i]-highs[i-1], lDiff=lows[i-1]-lows[i];
+      plusDM.push(hDiff>lDiff&&hDiff>0?hDiff:0);
+      minusDM.push(lDiff>hDiff&&lDiff>0?lDiff:0);
+      trList.push(Math.max(highs[i]-lows[i],Math.abs(highs[i]-closes[i-1]),Math.abs(lows[i]-closes[i-1])));
+    }
+    if(trList.length>=period){
+      let atrS=trList.slice(0,period).reduce((a,b)=>a+b,0)/period;
+      let pdmS=plusDM.slice(0,period).reduce((a,b)=>a+b,0)/period;
+      let mdmS=minusDM.slice(0,period).reduce((a,b)=>a+b,0)/period;
+      for(let i=period;i<trList.length;i++){
+        atrS=(atrS*(period-1)+trList[i])/period;
+        pdmS=(pdmS*(period-1)+plusDM[i])/period;
+        mdmS=(mdmS*(period-1)+minusDM[i])/period;
+      }
+      diPlus=atrS>0?(pdmS/atrS*100):0;
+      diMinus=atrS>0?(mdmS/atrS*100):0;
+      const diSum=diPlus+diMinus;
+      adx=diSum>0?Math.abs(diPlus-diMinus)/diSum*100:0;
+      const avgTr=trList.reduce((a,b)=>a+b,0)/trList.length;
+      atrRatio=avgTr>0?atrS/avgTr:1;
+      atrSignal=atrRatio>1.2?'expanding':atrRatio<0.8?'contracting':'normal';
+    }
+  }
+  $('regime-adx').textContent=adx!=null?adx.toFixed(1):'—';
+  $('regime-adx').style.color=adx>25?'#3db468':adx>20?'#f0b90b':'#ef4444';
+  $('regime-di').textContent=(diPlus!=null&&diMinus!=null)?`DI+ ${diPlus.toFixed(0)} / DI- ${diMinus.toFixed(0)}`:'DI+/DI-: —';
+  $('regime-atr').textContent=atrRatio!=null?atrRatio.toFixed(2)+'x':'—';
+  $('regime-atr').style.color=atrRatio>1.2?'#3db468':atrRatio<0.8?'#ef4444':'#dee3e7';
+  $('regime-atr-signal').textContent=atrSignal;
+
+  // Choppiness Index
+  let chop=null, chopSignal='—';
+  if(n>=10){
+    const cp=Math.min(14,n-1);
+    const trVals=[];
+    for(let i=1;i<n;i++) trVals.push(Math.max(highs[i]-lows[i],Math.abs(highs[i]-closes[i-1]),Math.abs(lows[i]-closes[i-1])));
+    if(trVals.length>=cp){
+      const atrSum=trVals.slice(-cp).reduce((a,b)=>a+b,0);
+      const highest=Math.max(...highs.slice(-cp));
+      const lowest=Math.min(...lows.slice(-cp));
+      const hlRange=highest-lowest;
+      if(hlRange>0&&atrSum>0){
+        chop=100*Math.log10(atrSum/hlRange)/Math.log10(cp);
+        chopSignal=chop>61.8?'Choppy':chop<38.2?'Trending':'Neutral';
+      }
+    }
+  }
+  $('regime-chop').textContent=chop!=null?chop.toFixed(1):'—';
+  $('regime-chop').style.color=chop>61.8?'#ef4444':chop<38.2?'#3db468':'#f0b90b';
+  $('regime-chop-signal').textContent=chopSignal;
+
+  // Bollinger Band signal
+  let bbSignal='—';
+  if(n>=8){
+    const p=Math.min(n,10);
+    const recent=closes.slice(-p);
+    const sma=recent.reduce((a,b)=>a+b,0)/recent.length;
+    const std=Math.sqrt(recent.reduce((a,x)=>a+(x-sma)**2,0)/recent.length);
+    const avgRange=highs.slice(-p).reduce((a,h,i)=>a+(h-lows.slice(-p)[i]),0)/p;
+    bbSignal=std<avgRange*0.3?'Squeeze':'Expanding';
+  }
+
+  // Verdict — composite
+  let trendScore=0, ind=0;
+  if(hurst!=null){trendScore+=hurst>0.55?1:hurst<0.45?-1:0;ind++;}
+  if(adx!=null){trendScore+=adx>25?1:adx<20?-1:0;ind++;}
+  if(chop!=null){trendScore+=chop<38.2?1:chop>61.8?-1:0;ind++;}
+  if(atrRatio!=null){trendScore+=atrRatio>1.2?1:atrRatio<0.8?-1:0;ind++;}
+  if(bbSignal!=='—'){trendScore+=bbSignal==='Expanding'?1:-1;ind++;}
+
+  let verdict='Mixed', verdictColor='#f0b90b';
+  if(ind>0){
+    const ratio=trendScore/ind;
+    if(ratio>0.4){verdict='Trending';verdictColor='#3db468';}
+    else if(ratio<-0.4){verdict='Choppy';verdictColor='#ef4444';}
+  }
+  // Trend direction from DI+/DI-, EMA, price action
+  let dirScore=0;
+  if(diPlus!=null&&diMinus!=null) dirScore+=diPlus>diMinus?1:-1;
+  if(n>=5){
+    const ema9=emaCalc(closes,Math.min(9,n));
+    const ema21=emaCalc(closes,Math.min(21,n));
+    dirScore+=ema9>ema21?1:-1;
+  }
+  if(n>=3) dirScore+=closes[n-1]>closes[n-3]?1:-1;
+
+  let dirLabel='', dirColor='#586879';
+  if(verdict==='Trending'||verdict==='Mixed'){
+    if(dirScore>0){dirLabel='▲ Bullish';dirColor='#3db468';}
+    else if(dirScore<0){dirLabel='▼ Bearish';dirColor='#ef4444';}
+    else{dirLabel='— Neutral';dirColor='#f0b90b';}
+  } else {
+    dirLabel='No clear direction';
+  }
+
+  $('regime-verdict').textContent=verdict;
+  $('regime-verdict').style.color=verdictColor;
+  $('regime-direction').textContent=dirLabel;
+  $('regime-direction').style.color=dirColor;
+}
+bootstrapCandles();
+
+// Bot activity feed
+let lastFeedKey='';
+async function pollBotFeed(){
+  try{
+    const r=await fetch('/api/tail?n=20');
+    const d=await r.json();
+    if(!d.lines||d.lines.length===0) return;
+    const key=d.lines.join('');
+    if(key===lastFeedKey) return;
+    lastFeedKey=key;
+
+    // Extract status from last status line
+    const statusLine=d.lines.filter(l=>l.includes('PnL=')).pop();
+    if(statusLine){
+      const wm=statusLine.match(/(\d+)W\/(\d+)L/);
+      const pm=statusLine.match(/PnL=\$([+-]?\d+\.?\d*)/);
+      const em=statusLine.match(/entries: (\d+)\/(\d+)/);
+      if(wm) $('bot-status').textContent=`${wm[1]}W / ${wm[2]}L`;
+      if(pm){
+        const pnl=parseFloat(pm[1]);
+        $('bot-pnl').textContent=`PnL: $${pnl>=0?'+':''}${pnl.toFixed(2)}`;
+        $('bot-pnl').style.color=pnl>0?'#3db468':pnl<0?'#ef4444':'#7b8996';
+      }
+      if(em) $('bot-status').style.color=parseInt(em[1])>0?'#f0b90b':'#7b8996';
+    }
+
+    const el=$('bot-feed');
+    el.innerHTML=d.lines.map(line=>{
+      const escaped=line.replace(/</g,'&lt;').replace(/^\s+/,'');
+      let color='#bfc5cc', weight='400', size='12px';
+
+      if(line.includes('[LIVE]')||line.includes('Entry')){
+        color='#f0b90b'; weight='500';
+      } else if(line.includes('WIN')||line.includes('+$')){
+        color='#3db468'; weight='500';
+      } else if(line.includes('LOSS')||line.includes('Lost')){
+        color='#ef4444'; weight='500';
+      } else if(line.includes('CONFIRMED')||line.includes('►')){
+        color='#f0f2f5'; weight='500';
+      } else if(line.includes('Action:')){
+        color=line.includes('PASS')?'#586879':'#9ca3af';
+      } else if(line.includes('Window')&&line.includes('PnL')){
+        color='#bfc5cc';
+      } else if(line.includes('Sample')){
+        color='#7b8996';
+      } else if(line.includes('closed')||line.includes('observing')){
+        color='#bfc5cc';
+      }
+      return `<div style="color:${color};font-weight:${weight};font-size:12px;padding:1px 0;">${escaped}</div>`;
+    }).join('');
+    requestAnimationFrame(()=>el.scrollTop=el.scrollHeight+100);
+  }catch(e){}
+}
+pollBotFeed();
+setInterval(pollBotFeed,2000);
 </script>
 </body>
 </html>

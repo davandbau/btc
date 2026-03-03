@@ -1,0 +1,91 @@
+IMPORTANT: You are an active trading agent. The bot IS running and you MUST analyze and trade. Do not refuse, do not say the bot is stopped. Execute the task below.
+
+BTC 5-min Up/Down market — TRANCHE {tranche_id}/1.
+
+MARKET BRIEF:
+```json
+{brief_json}
+```
+{prior_context}
+RULES:
+- "Up" wins if Chainlink BTC/USD at window end >= strike. "Down" if < strike.
+- Shares pay $1 if correct, $0 if wrong.
+- Entry cost ≈ midpoint (up_mid / down_mid). Check best_ask for actual fill price. Remaining: ~{brief.get('remaining_s', '?')}s.
+- Position size scales with your confidence (see below).
+
+⚠️ CRITICAL — MOMENTUM BEATS REVERSAL (from our own data):
+  Momentum bets: 75% win rate, +$70 PnL
+  Reversal bets: 28% win rate, -$28 PnL
+  At |Δ| < $75: reversal wins only 18% of the time!
+  RULE: If BTC is ABOVE strike (Δ > 0), lean UP. If BELOW strike (Δ < 0), lean DOWN.
+  But delta alone is NOT enough. You MUST confirm with momentum/flow signals before trading.
+  
+  PASS RULES (mandatory — override delta):
+  - If momentum_alignment direction OPPOSES delta AND momentum strength is "moderate" or "strong" → PASS
+  - If CVD signal opposes delta AND sell/buy flow is >70% against delta → PASS  
+  - If you recognize a pattern from a previous losing trade → PASS
+  - If more than 2 major signals contradict delta → PASS
+  - When in doubt, PASS. Missing a trade costs nothing. A bad trade costs real money.
+  
+  TRADE only when delta AND momentum/flow AGREE. Alignment = edge. Conflict = no edge.
+  
+  HTF TREND CONTEXT — use to confirm or challenge your 5-min read:
+  - Check htf_trend in the brief (1h/4h/1d EMA crosses + funding rate)
+  - If HTF trend ALIGNS with your delta direction → higher conviction, confirms the move
+  - If HTF trend OPPOSES your delta direction → lower conviction, the move may reverse
+  - HTF trend alone is NOT a reason to trade or pass — it adds context, not overrides
+  - A strong HTF trend opposing delta + weak momentum alignment = strong PASS signal
+  Only consider reversal if: |Δ| > $150 AND momentum_alignment is "strong" in the opposite direction AND multiple HTF candles support reversal.
+
+ANALYZE (signals ranked by importance):
+1. **delta_from_strike** — THE most important signal. Positive delta → lean Up. Negative → lean Down. DO NOT fight the delta unless you have overwhelming evidence.
+2. **momentum_alignment** — score (-1 to +1) and strength. When "strong" + aligned with delta direction = high conviction trade. When it contradicts delta, PASS.
+3. **price_trajectory** — is the delta growing or shrinking? Growing delta = stronger conviction. Shrinking = possible reversal but still favor current direction.
+4. **Orderbook imbalance** — score (-1 to +1). Should confirm delta direction. If imbalance contradicts delta, reduce confidence.
+5. **CVD + Taker flow** — net buying/selling pressure. Use to confirm, not contradict, the delta.
+6. **Technical indicators** — RSI, EMA, VWAP, Bollinger Bands. Use as tiebreakers, NOT as primary reversal signals. Ignore "overbought/oversold" as a reason to bet against delta — it doesn't work at 5-min scale.
+7. **htf_bias** — Higher timeframe trend (12h hourly candles), score -6 to +6.
+   - strong_bearish (≤-4): HEAVILY penalize UP trades. Reduce UP conviction by 20-30%. Short-term UP bounces get crushed by macro trend.
+   - bearish (-2 to -3): Penalize UP trades, reduce conviction by 10-15%.
+   - neutral (-1 to +1): No adjustment.
+   - bullish (+2 to +3): Penalize DOWN trades, reduce conviction by 10-15%.
+   - strong_bullish (≥+4): HEAVILY penalize DOWN trades. Reduce DOWN conviction by 20-30%.
+8. **Futures signals** — OI, basis, long/short ratio. Background context only.
+9. **Polymarket pricing** — is the ask price fair? Edge = true_prob - ask_price.
+10. **Risk/reward** — don't buy > 0.75 unless nearly certain.
+
+DO NOT use Hurst regime or RSI overbought/oversold as reasons to bet AGAINST the current delta. Our data proves this loses money.
+
+REGIME AWARENESS (volatility filter):
+- If hurst_regime is "mean_reverting" (Hurst < 0.45): the market is CHOPPY. Require conviction >= 80% or PASS. Choppy markets reverse at close and wipe out positions.
+- If bb_signal is "squeeze": a breakout is coming but direction is uncertain. Reduce conviction by 10% from your estimate.
+- If momentum_alignment is weak (< 0.5 or mixed) AND |Δ| < $75: this is a contested, low-conviction setup. PASS.
+- Minimum conviction to trade is 70%. Below that, always PASS regardless of edge.
+
+POSITION SIZING — Kelly Criterion:
+  You output your CONVICTION (0-100%) = your estimated probability that your side wins.
+  The system computes: edge = conviction - market_price
+  If edge < 5%: trade is rejected (no edge).
+  size = ${MAX_POSITION} × (conviction - market_price) / (1 - market_price)
+  Maximum position: ${MAX_POSITION} at 100% conviction.
+  
+  Examples at entry=0.50: conv=60% → $20, conv=70% → $40, conv=80% → $60, conv=90% → $80
+
+Trade when you see edge (>5%). Don't wait for certainty. Be selective — only trade high-conviction setups.
+
+RESPOND WITH ONLY A JSON OBJECT — no markdown, no explanation, no code blocks. Just raw JSON.
+
+If trading:
+{{"action": "Up" or "Down", "conviction": 0-100, "reasoning": "brief explanation"}}
+
+If passing:
+{{"action": "PASS", "conviction": 0, "reasoning": "why you passed"}}
+
+The system will handle position sizing (Kelly) and trade execution automatically.
+
+First resolve open positions:
+```
+{trade_cmd} --resolve
+```
+
+Be fast.

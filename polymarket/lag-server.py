@@ -25,15 +25,20 @@ def fetch_chainlink():
         pass
     return None
 
+_chainlink_cache = {"data": None, "raw": b'{"error":"no data yet"}'}
+
 def poll_polymarket_price():
-    """Poll Chainlink for PM displayed price (same source, ~1s updates)."""
+    """Poll Chainlink for PM displayed price (same source, ~2s updates). Also caches full response."""
     import urllib.request
+    global _chainlink_cache
     while True:
         try:
             url = f"{CHAINLINK_API}?query=LIVE_STREAM_REPORTS_QUERY&variables=%7B%22feedId%22%3A%22{CHAINLINK_FEED_ID}%22%7D"
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
             resp = urllib.request.urlopen(req, timeout=5)
-            data = json.loads(resp.read())
+            raw = resp.read()
+            data = json.loads(raw)
+            _chainlink_cache = {"data": data, "raw": raw}
             nodes = data.get("data", {}).get("liveStreamReports", {}).get("nodes", [])
             if nodes:
                 price = round(float(nodes[0]["price"]) / 1e18, 2)
@@ -43,7 +48,7 @@ def poll_polymarket_price():
                     json.dump({"price": price, "timestamp": ts_str, "updated": time.time()}, f)
         except Exception as e:
             pass
-        time.sleep(1)
+        time.sleep(2)
 
 def update_tokens():
     """Write latest token IDs + Chainlink price from most recent brief."""
@@ -68,28 +73,106 @@ def update_tokens():
             print(f"Token update error: {e}")
         time.sleep(2)
 
+import base64
+
+# Basic auth credentials
+AUTH_USER = "david"
+AUTH_PASS = "bjy0KerftE0YFYWzBV6hNw"
+AUTH_REALM = "BTC Dashboard"
+
 class Handler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *a, **kw):
         super().__init__(*a, directory=DIR, **kw)
     def log_message(self, *a):
         pass
+    def check_auth(self):
+        auth = self.headers.get("Authorization", "")
+        if not auth.startswith("Basic "):
+            return False
+        try:
+            decoded = base64.b64decode(auth[6:]).decode()
+            return decoded == f"{AUTH_USER}:{AUTH_PASS}"
+        except:
+            return False
+    def list_directory(self, path):
+        """Disable directory listing."""
+        self.send_error(403, "Forbidden")
+        return None
     def do_GET(self):
+        # API endpoints skip auth (for internal polling)
+        if not self.path.startswith('/api/') and not self.check_auth():
+            self.send_response(401)
+            self.send_header("WWW-Authenticate", f'Basic realm="{AUTH_REALM}"')
+            self.end_headers()
+            return
         if self.path.startswith('/api/chainlink'):
             self.proxy_chainlink()
         elif self.path.startswith('/api/pm-price'):
             self.serve_pm_price()
         elif self.path == '/api/futures-live':
             self.serve_futures_live()
+        elif self.path == '/api/regime':
+            self.serve_regime()
+        elif self.path.startswith('/api/tail'):
+            self.serve_tail()
         elif self.path.startswith('/api/futures'):
             self.serve_futures()
         else:
             super().do_GET()
+    def end_headers(self):
+        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+        super().end_headers()
     def serve_futures_live(self):
         """Serve live futures state (liqs, spread) from shadow's JSON file."""
         try:
             live_path = os.path.join(DIR, "logs", "futures-live.json")
             if os.path.exists(live_path):
                 data = open(live_path).read()
+            else:
+                data = '{"error":"no data yet"}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(data.encode())
+        except Exception as e:
+            self.send_response(500)
+            self.end_headers()
+            self.wfile.write(f'{{"error":"{e}"}}'.encode())
+
+    def serve_tail(self):
+        """Tail the reasoning bot log."""
+        try:
+            import subprocess
+            n = 20  # default lines
+            qs = self.path.split('?')
+            if len(qs) > 1:
+                for param in qs[1].split('&'):
+                    if param.startswith('n='):
+                        n = min(int(param.split('=')[1]), 100)
+            log_path = os.path.join(DIR, "logs", "reasoning-loop.log")
+            result = subprocess.run(['tail', f'-{n}', log_path], capture_output=True, text=True)
+            lines = result.stdout.strip().split('\n') if result.stdout.strip() else []
+            import json as jmod
+            data = jmod.dumps({"lines": lines})
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(data.encode())
+        except Exception as e:
+            self.send_response(500)
+            self.end_headers()
+            self.wfile.write(f'{{"error":"{e}"}}'.encode())
+
+    def serve_regime(self):
+        """Serve live regime/trend data from reasoning bot."""
+        try:
+            path = os.path.join(DIR, "logs", "regime-live.json")
+            if os.path.exists(path):
+                data = open(path).read()
             else:
                 data = '{"error":"no data yet"}'
             self.send_response(200)
@@ -148,22 +231,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
     def proxy_chainlink(self):
-        import urllib.request
-        try:
-            url = f"{CHAINLINK_API}?query=LIVE_STREAM_REPORTS_QUERY&variables=%7B%22feedId%22%3A%22{CHAINLINK_FEED_ID}%22%7D"
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            resp = urllib.request.urlopen(req, timeout=5)
-            data = resp.read()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Cache-Control", "no-cache, no-store")
-            self.end_headers()
-            self.wfile.write(data)
-        except Exception as e:
-            self.send_response(502)
-            self.end_headers()
-            self.wfile.write(f'{{"error":"{e}"}}'.encode())
+        """Serve cached Chainlink data (updated every 2s by background thread)."""
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Cache-Control", "no-cache, no-store")
+        self.end_headers()
+        self.wfile.write(_chainlink_cache["raw"])
 
 if __name__ == "__main__":
     t = threading.Thread(target=update_tokens, daemon=True)

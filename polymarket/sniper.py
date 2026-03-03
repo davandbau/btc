@@ -431,7 +431,7 @@ def check_daily_limit():
 def get_bankroll():
     """Estimate bankroll from starting capital + cumulative PnL from ledger."""
     try:
-        STARTING_CAPITAL = 350  # approximate initial deposit
+        STARTING_CAPITAL = 219  # reset 2026-03-01 to match actual balance
         ledger = load_ledger()
         total_pnl = ledger.get("stats", {}).get("total_pnl", 0)
         return STARTING_CAPITAL + total_pnl
