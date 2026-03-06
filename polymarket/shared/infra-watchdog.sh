@@ -15,6 +15,14 @@ if ! pgrep -f "lag-server.py" > /dev/null 2>&1; then
     ok=false
 fi
 
+# Check metrics-collector
+if ! pgrep -f "metrics-collector.py" > /dev/null 2>&1; then
+    echo "$(date -u '+%Y-%m-%d %H:%M:%S') Restarting metrics-collector" >> "$RESTART_LOG"
+    cd "$WORKSPACE/polymarket/shared"
+    nohup python3.12 metrics-collector.py >> logs/metrics-collector.log 2>&1 &
+    ok=false
+fi
+
 # Check cloudflared tunnel
 if ! pgrep -f "cloudflared tunnel run" > /dev/null 2>&1; then
     echo "$(date -u '+%Y-%m-%d %H:%M:%S') Restarting cloudflared" >> "$RESTART_LOG"

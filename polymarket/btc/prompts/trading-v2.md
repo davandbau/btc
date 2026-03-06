@@ -55,12 +55,12 @@ CONFIRMING signals (for your side):
 - momentum_alignment: direction matches AND strength is moderate/strong
 - CVD/trade_flow: matches your direction
 - price_trajectory: delta growing (not shrinking)
-- HTF trend: composite matches your direction
+- Short-term bias: composite matches your direction (based on 5m/15m candles)
 
 CONTRADICTING signals:
 - momentum_alignment opposes your direction
 - CVD/trade_flow opposes (>60% against you)
-- HTF trend composite opposes
+- Short-term bias composite opposes
 - Orderbook imbalance opposes (even if not extreme enough to trigger Gate 3)
 - Futures basis/funding rate divergence
 
@@ -88,7 +88,7 @@ COMMON LOSS PATTERNS (from our actual trading data — avoid these):
 2. **Trading in chop**: Low ADX, mixed momentum, small delta. No edge exists. PASS.
 3. **Ignoring orderbook**: Delta says Up but OB shows 1000:1 sell/buy ratio. The orderbook is real liquidity, delta is just a snapshot. PASS.
 4. **Trading "marginal" setups**: If confirming ≈ contradicting (e.g. 3v3, 4v3), this is NOT a trade. It's a coin flip with fees. Every signal you count as "confirming" must clearly and unambiguously support your direction — don't stretch to count weak/neutral signals as confirming.
-5. **Short-term flow vs structural trend**: CVD/delta can show temporary selling in a bullish trend. Don't bet Down just because short-term flow is bearish when HTF trend, EMA, and momentum are all bullish. Trend beats flow.
+5. **Short-term flow vs momentum**: CVD/delta can show temporary selling in a recent uptrend. Don't bet Down just because short-term flow is bearish when 5m/15m EMA, momentum, and bias are all bullish. Recent trend beats momentary flow.
 
 RESPOND WITH ONLY A JSON OBJECT — no markdown, no explanation, no code blocks. Just raw JSON. Keep reasoning under 150 words — be terse.
 

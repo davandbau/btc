@@ -252,7 +252,7 @@ def build_brief(cached_strike=None):
         }
 
     # Binance klines — 1m, 15m, 1h
-    for tf, key, count in [("1m", "candles_1m", 30), ("15m", "candles_15m", 8), ("1h", "candles_1h", 6)]:
+    for tf, key, count in [("1m", "candles_1m", 30), ("5m", "candles_5m", 12), ("15m", "candles_15m", 8)]:
         klines = fetch_json(f"https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval={tf}&limit={count}")
         if klines:
             candles = []
@@ -271,8 +271,8 @@ def build_brief(cached_strike=None):
                 candles.append({"c": color, "range": rng, "close": round(c, 1), "vol": round(v, 2)})
             brief[key] = candles
 
-            # HTF trend summary for 15m and 1h
-            if tf in ("15m", "1h"):
+            # HTF trend summary for 5m and 15m
+            if tf in ("5m", "15m"):
                 greens = sum(1 for c in candles if c["c"] == "Green")
                 reds = len(candles) - greens
                 net_move = round(closes[-1] - closes[0], 1) if len(closes) > 1 else 0
@@ -446,15 +446,15 @@ def build_brief(cached_strike=None):
             alignment_signals.append(1 if brief["technical"]["rsi_signal"] == "oversold" else -1 if brief["technical"]["rsi_signal"] == "overbought" else 0)
         if brief["technical"].get("vwap_signal"):
             alignment_signals.append(1 if brief["technical"]["vwap_signal"] == "above" else -1)
+    if brief.get("candles_5m"):
+        c5 = brief["candles_5m"]
+        greens = sum(1 for c in c5 if c.get("c", "").startswith("G"))
+        reds = sum(1 for c in c5 if c.get("c", "").startswith("R"))
+        alignment_signals.append(1 if greens > reds else -1 if reds > greens else 0)
     if brief.get("candles_15m"):
         c15 = brief["candles_15m"]
         greens = sum(1 for c in c15 if c.get("c", "").startswith("G"))
         reds = sum(1 for c in c15 if c.get("c", "").startswith("R"))
-        alignment_signals.append(1 if greens > reds else -1 if reds > greens else 0)
-    if brief.get("candles_1h"):
-        c1h = brief["candles_1h"]
-        greens = sum(1 for c in c1h if c.get("c", "").startswith("G"))
-        reds = sum(1 for c in c1h if c.get("c", "").startswith("R"))
         alignment_signals.append(1 if greens > reds else -1 if reds > greens else 0)
     if brief.get("trade_flow", {}).get("cvd_signal"):
         cvd_sig = brief["trade_flow"]["cvd_signal"]
@@ -514,31 +514,32 @@ def build_brief(cached_strike=None):
                 except:
                     pass
 
-    # ---- HTF Bias (12h hourly candles) ----
-    htf_candles = fetch_json("https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1h&limit=12")
-    if htf_candles and len(htf_candles) >= 6:
+    # ---- Short-term Bias (1h of 5m candles) ----
+    # NOTE: Deliberately uses 5m candles (12 = 1 hour lookback). No 1h/4h/1d — too slow for 5-min windows.
+    stf_candles = fetch_json("https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=12")
+    if stf_candles and len(stf_candles) >= 6:
         try:
-            closes = [float(c[4]) for c in htf_candles]
-            highs = [float(c[2]) for c in htf_candles]
-            lows = [float(c[3]) for c in htf_candles]
-            opens = [float(c[1]) for c in htf_candles]
+            closes = [float(c[4]) for c in stf_candles]
+            highs = [float(c[2]) for c in stf_candles]
+            lows = [float(c[3]) for c in stf_candles]
+            opens = [float(c[1]) for c in stf_candles]
             now_price = closes[-1]
             score = 0.0
 
-            # 1. Price change 12h
-            chg_12h = (now_price - closes[0]) / closes[0] * 100
-            if chg_12h > 1: score += 1
-            elif chg_12h > 0.3: score += 0.5
-            elif chg_12h < -1: score -= 1
-            elif chg_12h < -0.3: score -= 0.5
+            # 1. Price change 1h (full window)
+            chg_1h = (now_price - closes[0]) / closes[0] * 100
+            if chg_1h > 0.3: score += 1
+            elif chg_1h > 0.1: score += 0.5
+            elif chg_1h < -0.3: score -= 1
+            elif chg_1h < -0.1: score -= 0.5
 
-            # 2. Price change 4h (last 4 candles)
-            if len(closes) >= 4:
-                chg_4h = (now_price - closes[-4]) / closes[-4] * 100
-                if chg_4h > 0.5: score += 1
-                elif chg_4h > 0.15: score += 0.5
-                elif chg_4h < -0.5: score -= 1
-                elif chg_4h < -0.15: score -= 0.5
+            # 2. Price change 30m (last 6 candles)
+            if len(closes) >= 6:
+                chg_30m = (now_price - closes[-6]) / closes[-6] * 100
+                if chg_30m > 0.15: score += 1
+                elif chg_30m > 0.05: score += 0.5
+                elif chg_30m < -0.15: score -= 1
+                elif chg_30m < -0.05: score -= 0.5
 
             # 3. EMA cross (EMA-6 vs EMA-12)
             def ema(data, period):
@@ -550,8 +551,8 @@ def build_brief(cached_strike=None):
             ema6 = ema(closes, 6)
             ema12 = ema(closes, 12)
             ema_diff = (ema6 - ema12) / ema12 * 100
-            if ema_diff > 0.1: score += 1
-            elif ema_diff < -0.1: score -= 1
+            if ema_diff > 0.02: score += 1
+            elif ema_diff < -0.02: score -= 1
 
             # 4. Candle ratio (green vs red)
             green = sum(1 for o, c in zip(opens, closes) if c >= o)
@@ -561,18 +562,18 @@ def build_brief(cached_strike=None):
             elif red >= 9: score -= 1
             elif red >= 7: score -= 0.5
 
-            # 5. Structure — last 3 hourly closes
+            # 5. Structure — last 3 candle closes
             last3 = closes[-3:]
             if last3[2] > last3[1] > last3[0]: score += 1
             elif last3[2] > last3[1] or last3[1] > last3[0]: score += 0.5 if last3[2] > last3[0] else 0
             if last3[2] < last3[1] < last3[0]: score -= 1
             elif last3[2] < last3[1] or last3[1] < last3[0]: score -= 0.5 if last3[2] < last3[0] else 0
 
-            # 6. Range position — current price in 12h high-low range
-            h12_high = max(highs)
-            h12_low = min(lows)
-            if h12_high > h12_low:
-                range_pos = (now_price - h12_low) / (h12_high - h12_low)
+            # 6. Range position — current price in 1h high-low range
+            h1_high = max(highs)
+            h1_low = min(lows)
+            if h1_high > h1_low:
+                range_pos = (now_price - h1_low) / (h1_high - h1_low)
                 if range_pos >= 0.8: score += 1
                 elif range_pos >= 0.6: score += 0.5
                 elif range_pos <= 0.2: score -= 1
@@ -590,8 +591,8 @@ def build_brief(cached_strike=None):
             brief["htf_bias"] = {
                 "score": round(score, 1),
                 "label": label,
-                "12h_change_pct": round(chg_12h, 2),
-                "4h_change_pct": round(chg_4h, 2) if len(closes) >= 4 else None,
+                "1h_change_pct": round(chg_1h, 2),
+                "30m_change_pct": round(chg_30m, 2) if len(closes) >= 6 else None,
                 "ema6_vs_12": round(ema_diff, 3),
                 "green_candles": green,
                 "red_candles": red,
@@ -654,9 +655,10 @@ def build_brief(cached_strike=None):
                 "signal": "coinbase premium" if spread > 10 else "coinbase discount" if spread < -10 else "aligned",
             }
 
-    # HTF trend analysis (1h/4h/1d EMA crosses + funding)
+    # Short-term trend analysis (5m/15m EMA crosses + funding)
+    # NOTE: Deliberately excludes 1h/4h/1d — too slow for 5-min windows
     htf_signals = []
-    for tf, period, weight in [("1h", 48, 1), ("4h", 42, 2), ("1d", 30, 1)]:
+    for tf, period, weight in [("5m", 30, 2), ("15m", 24, 1)]:
         kl = fetch_json(f"https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval={tf}&limit={period}")
         if kl and len(kl) >= 21:
             closes = [float(k[4]) for k in kl]
@@ -754,7 +756,7 @@ def trigger_agent(brief, tranche, prior_decisions, dry_run=False, live=False):
 
     # Compact brief for the agent — strip raw candle arrays, keep summaries
     compact = dict(brief)
-    for key in ["candles_1m", "candles_15m", "candles_1h"]:
+    for key in ["candles_1m", "candles_5m", "candles_15m"]:
         if key in compact:
             candles = compact[key]
             greens = sum(1 for c in candles if c.get("c") == "Green")
@@ -1023,8 +1025,8 @@ def get_observation_snapshot():
         obs["cvd"] = "BUY" if buy_vol > sell_vol * 1.3 else "SELL" if sell_vol > buy_vol * 1.3 else "~"
         obs["buy_pct"] = round(buy_vol / total * 100) if total > 0 else 50
 
-    # 15m and 1h trend from klines
-    for tf, label in [("15m", "15m"), ("1h", "1h")]:
+    # 5m and 15m trend from klines
+    for tf, label in [("5m", "5m"), ("15m", "15m")]:
         klines = fetch_json(f"https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval={tf}&limit=6")
         if klines:
             closes = [float(k[4]) for k in klines]
