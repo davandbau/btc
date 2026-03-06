@@ -67,7 +67,7 @@ case "$1" in
         # Start bot
         echo "🚀 Starting reasoning bot..."
         cd "$BOT_DIR"
-        nohup python3.12 -u reasoning-loop.py --live > "$LOG" 2>&1 &
+        nohup python3.12 -u reasoning-loop.py --live >> "$LOG" 2>&1 &
         NEW_PID=$!
         echo "$NEW_PID" > "$PIDFILE"
         sleep 2

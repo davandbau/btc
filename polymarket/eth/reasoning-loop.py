@@ -891,24 +891,29 @@ def trigger_agent(brief, tranche, prior_decisions, dry_run=False, live=False):
 
                         # Execute trade (paper or live)
                         if sized > 0:
-                            trade_cmd_exec = [
-                                trader_python, trader_script,
-                                "--trade", side, str(entry_price),
-                                f"T{tranche_id}/conv[{conviction}]: {reasoning[:80]}",
-                                "--size", str(sized),
-                                "--confidence", str(conviction),
-                                "--delta", str(compact.get('delta_from_strike', 0)),
-                                "--strike", str(compact.get('strike', 0)),
-                                "--momentum", str(compact.get('momentum_alignment', {}).get('score', 0) if isinstance(compact.get('momentum_alignment'), dict) else 0),
-                                "--brief-file", str(brief_file),
-                            ] + (["--live"] if live else [])
-                            try:
-                                trade_result = subprocess.run(trade_cmd_exec, capture_output=True, text=True, timeout=15)
-                                if trade_result.stdout:
-                                    for tl in trade_result.stdout.strip().split('\n')[-3:]:
-                                        print(f"  [{ts}]    {tl.strip()[:100]}")
-                            except Exception as te:
-                                print(f"  [{ts}] ⚠️  Trade execution error: {te}")
+                            # Gate 1: NO_TRADE blocks order placement
+                            if (BOT_DIR / "NO_TRADE").exists() and not dry_run:
+                                print(f"  [{ts}] 🔒 NO_TRADE: would {side} ${sized:.2f} @ {conviction}% conviction, edge={edge}, price={entry_price} — BLOCKED")
+                                decision["blocked"] = True
+                            else:
+                                trade_cmd_exec = [
+                                    trader_python, trader_script,
+                                    "--trade", side, str(entry_price),
+                                    f"T{tranche_id}/conv[{conviction}]: {reasoning[:80]}",
+                                    "--size", str(sized),
+                                    "--confidence", str(conviction),
+                                    "--delta", str(compact.get('delta_from_strike', 0)),
+                                    "--strike", str(compact.get('strike', 0)),
+                                    "--momentum", str(compact.get('momentum_alignment', {}).get('score', 0) if isinstance(compact.get('momentum_alignment'), dict) else 0),
+                                    "--brief-file", str(brief_file),
+                                ] + (["--live"] if live else [])
+                                try:
+                                    trade_result = subprocess.run(trade_cmd_exec, capture_output=True, text=True, timeout=15)
+                                    if trade_result.stdout:
+                                        for tl in trade_result.stdout.strip().split('\n')[-3:]:
+                                            print(f"  [{ts}]    {tl.strip()[:100]}")
+                                except Exception as te:
+                                    print(f"  [{ts}] ⚠️  Trade execution error: {te}")
             else:
                 # Fallback: try regex parsing for backwards compatibility
                 full = output.upper()
@@ -1218,20 +1223,51 @@ def run_loop(dry_run=False, live=False):
 
             # Init window state
             if current_window not in window_state:
-                # Capture strike price NOW (within first seconds of window)
+                # Capture strike: poll Chainlink for up to 10s to find the first
+                # report AT or AFTER window start (matches Polymarket resolution)
                 _cached_strike = None
                 try:
-                    result = get_quick_delta()
-                    if len(result) == 4:
-                        _, _s, _, cl_offset = result
-                    else:
-                        _, _s, _ = result
-                        cl_offset = "?"
-                    _cached_strike = _s
+                    _strike_found = False
+                    time.sleep(5)  # Wait for CL buffer to populate with reports near window boundary
+                    for _attempt in range(10):
+                        cl_url = f"{CHAINLINK_API}?query=LIVE_STREAM_REPORTS_QUERY&variables=%7B%22feedId%22%3A%22{CHAINLINK_FEED_ID}%22%7D"
+                        cl_data = fetch_json(cl_url)
+                        if cl_data and "data" in cl_data:
+                            nodes = cl_data["data"].get("liveStreamReports", {}).get("nodes", [])
+                            # Find report closest to window start (before or after)
+                            best_node = None
+                            best_gap = float('inf')
+                            for n in nodes:
+                                report_ts = datetime.fromisoformat(n["validFromTimestamp"].replace("Z", "+00:00")).timestamp()
+                                gap = abs(report_ts - current_window)
+                                if gap < best_gap:
+                                    best_gap = gap
+                                    best_node = n
+                                    best_report_ts = report_ts
+                            if best_node and best_gap < 30:  # sanity: within 30s
+                                n = best_node
+                                report_ts = best_report_ts
+                                if True:
+                                    _cached_strike = round(float(n["price"]) / 1e18, 2)
+                                    cl_offset = round(report_ts - current_window, 1)
+                                    cl_side = "after" if cl_offset >= 0 else "before"
+                                    ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
+                                    print(f"  [{ts}] 📌 Strike cached: ${_cached_strike:,.2f} (CL report {abs(cl_offset)}s {cl_side} window start, attempt {_attempt+1})")
+                                    _strike_found = True
+                                    break
+                        if _strike_found:
+                            break
+                        time.sleep(1)
+                    if not _strike_found:
+                        # Fallback: use closest available price
+                        result = get_quick_delta()
+                        if result and len(result) >= 3:
+                            _, _cached_strike, _ = result[:3]
+                            ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
+                            print(f"  [{ts}] ⚠️ Strike fallback (no post-window report found): ${_cached_strike:,.2f}")
+                except Exception as e:
                     ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
-                    print(f"  [{ts}] 📌 Strike cached: ${_s:,.2f} (captured at {elapsed:.0f}s into window, CL offset: {cl_offset}s)")
-                except:
-                    pass
+                    print(f"  [{ts}] ⚠️ Strike capture failed: {e}")
                 window_state[current_window] = {
                     "delta_samples": [],       # list of (elapsed, delta) tuples
                     "last_sample": 0,          # timestamp of last sample
@@ -1264,23 +1300,19 @@ def run_loop(dry_run=False, live=False):
                     print(f"  [{ts}] Window {window_str} | {elapsed:.0f}s in, {remaining:.0f}s left")
                 last_status = now
 
-            # ---- NO_TRADE kill switch (skipped in dry-run/paper mode) ----
+            # ---- NO_TRADE observe mode announcement ----
             no_trade_file = BOT_DIR / "NO_TRADE"
             if no_trade_file.exists() and not dry_run:
                 if not state.get("no_trade_warned"):
                     ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
-                    print(f"  [{ts}] ⛔ NO_TRADE file present — all trading blocked")
+                    print(f"  [{ts}] ⛔ NO_TRADE active — running in observe mode (no orders will be placed)")
                     state["no_trade_warned"] = True
-                    state["done"] = True
-                # Skip monitoring entirely
             elif state.get("no_trade_warned"):
-                # NO_TRADE was just removed — announce trading is live
                 ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
                 print(f"\n  [{ts}] 🔓 NO_TRADE lifted — TRADING IS NOW LIVE\n")
                 state["no_trade_warned"] = False
-                state["done"] = False
             # ---- Monitoring Window Logic ----
-            elif not state["done"] and MONITOR_START <= elapsed <= MONITOR_END:
+            if not state["done"] and MONITOR_START <= elapsed <= MONITOR_END:
 
                 # Sample delta at intervals
                 if now - state["last_sample"] >= SAMPLE_INTERVAL:
@@ -1325,7 +1357,7 @@ def run_loop(dry_run=False, live=False):
                         if n_entries >= MAX_ENTRIES_PER_WINDOW:
                             continue
 
-                        if abs(delta) < 1.0:  # ETH scale
+                        if abs(delta) < 2.0:  # ETH scale
                             continue
 
                         # FIRST ENTRY: continuous attempts from 120s until MONITOR_END

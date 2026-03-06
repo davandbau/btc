@@ -7,7 +7,7 @@ LOG="$BOT_DIR/logs/reasoning-loop.log"
 REDEEM_LOG="$BOT_DIR/logs/redeem-watcher.log"
 NO_TRADE="$BOT_DIR/NO_TRADE"
 PIDFILE="$BOT_DIR/bot.pid"
-WATCHDOG_ID="ed2b9212-92a1-4689-90ae-c14f4b18cff9"
+WATCHDOG_ID="f0ba2dc6-29ad-4b7e-8e8f-ccda25346fb1"
 
 get_pid() {
     # Primary: pidfile. Fallback: pgrep with full path.

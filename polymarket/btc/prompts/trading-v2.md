@@ -32,15 +32,19 @@ DECISION FRAMEWORK (check in order — each is a gate):
 - ADX > 30 = real trend. Proceed to next gate.
 
 **GATE 2: Is the move exhausted? (RSI + Hurst + BB)**
-These are CRITICAL safety signals. An exhausted move will reverse within the window.
+These are safety signals, but interpret them IN CONTEXT of trend strength.
 - RSI > 85 AND you'd bet Up → PASS. The move is spent. A pullback is coming.
 - RSI < 15 AND you'd bet Down → PASS. The move is spent. A bounce is coming.
 - Hurst < 0.30 + RSI extreme (>80 or <20) + BB extreme (>90% or <10%) → PASS. Triple exhaustion = guaranteed reversal territory.
-- RSI 70-85 or 15-30: proceed but reduce conviction by 10%.
+
+**Trend-adjusted RSI rules (important!):**
+- In strong trends (ADX > 30): RSI 65-80 is NORMAL for the trending direction, not exhaustion. Do NOT reduce conviction for RSI in this range when ADX > 30. Only reject at RSI > 85 (Up) or < 15 (Down).
+- In strong trends: Hurst 0.45-0.55 (random walk zone) is acceptable — trending price can exhibit random walk characteristics on short timeframes. Only reject Hurst < 0.35.
+- In weak trends (ADX 20-30): RSI 70-85 or 15-30 → reduce conviction by 10%. Hurst < 0.45 → reduce conviction by 5%.
 
 **GATE 3: Does the orderbook confirm? (OB imbalance)**
-- OB score < -0.7 AND you'd bet Up → PASS. Massive selling pressure contradicts your trade.
-- OB score > 0.7 AND you'd bet Down → PASS. Massive buying pressure contradicts your trade.
+- OB score < -0.6 AND you'd bet Up → PASS. Strong selling pressure contradicts your trade.
+- OB score > 0.6 AND you'd bet Down → PASS. Strong buying pressure contradicts your trade.
 - OB neutral or confirming → proceed.
 
 **GATE 4: Signal alignment check**
@@ -61,15 +65,16 @@ CONTRADICTING signals:
 - Futures basis/funding rate divergence
 
 DECISION:
-- 4+ confirming, 0-1 contradicting → Trade. Conviction 75-85%.
-- 3 confirming, 1-2 contradicting → Trade only if delta is strong (|Δ| > $75). Conviction 70-75%.
-- 2 confirming, 2+ contradicting → PASS. Too much conflict.
-- Any setup where contradicting >= confirming → PASS.
+- 5+ confirming, 0-1 contradicting → Trade. Conviction 80-90%.
+- 4 confirming, 0-1 contradicting → Trade. Conviction 75-82%.
+- 4 confirming, 2 contradicting → Trade only if delta is strong (|Δ| > $75). Conviction 72-78%.
+- 3 confirming, 2+ contradicting → PASS. Signal is marginal — marginal = PASS.
+- Any setup where contradicting >= confirming → PASS. No exceptions.
+- If you'd describe the trade as "marginal" in your reasoning, that IS a PASS. Marginal trades lose money over time.
 
 **GATE 5: Price and edge check**
-- Don't buy shares above 0.70 unless conviction is 85%+.
-- Edge = your conviction - entry price. If edge < 7%, PASS.
-- Recent losses in the session? Be MORE selective, not less. Losing streaks mean conditions are unfavorable.
+- Don't buy shares above 0.92 unless conviction is 90%+.
+- Edge = your conviction - entry price. If edge < 5%, PASS.
 
 CONVICTION CALIBRATION:
 - 90-100%: Reserve for extreme setups — strong trend (ADX>40), all signals aligned, large delta (|Δ|>$150), no contradictions. These are rare.
@@ -82,9 +87,10 @@ COMMON LOSS PATTERNS (from our actual trading data — avoid these):
 1. **Chasing exhausted moves**: Strong trend + extreme RSI + mean-reverting Hurst. Looks like a "strong signal" but the move is already done. PASS.
 2. **Trading in chop**: Low ADX, mixed momentum, small delta. No edge exists. PASS.
 3. **Ignoring orderbook**: Delta says Up but OB shows 1000:1 sell/buy ratio. The orderbook is real liquidity, delta is just a snapshot. PASS.
-4. **Overconfidence after wins**: Three wins in a row doesn't mean the next setup is good. Each window is independent. Judge on signals, not momentum.
+4. **Trading "marginal" setups**: If confirming ≈ contradicting (e.g. 3v3, 4v3), this is NOT a trade. It's a coin flip with fees. Every signal you count as "confirming" must clearly and unambiguously support your direction — don't stretch to count weak/neutral signals as confirming.
+5. **Short-term flow vs structural trend**: CVD/delta can show temporary selling in a bullish trend. Don't bet Down just because short-term flow is bearish when HTF trend, EMA, and momentum are all bullish. Trend beats flow.
 
-RESPOND WITH ONLY A JSON OBJECT — no markdown, no explanation, no code blocks. Just raw JSON.
+RESPOND WITH ONLY A JSON OBJECT — no markdown, no explanation, no code blocks. Just raw JSON. Keep reasoning under 150 words — be terse.
 
 If trading:
 {{"action": "Up" or "Down", "conviction": 0-100, "reasoning": "brief explanation including which gates passed/failed"}}

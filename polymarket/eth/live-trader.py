@@ -42,7 +42,7 @@ KILL_SWITCH_FILE = Path.home() / "POLY_KILL"
 # ---- Paths ----
 SCRIPT_DIR = Path(__file__).parent
 CREDS_FILE = Path.home() / ".openclaw/workspace/.polymarket-creds.json"
-LEDGER_FILE = SCRIPT_DIR / "ledgers" / "eth.json"
+LEDGER_FILE = SCRIPT_DIR / "ledgers" / "reasoning.json"
 DAILY_LOG_DIR = SCRIPT_DIR / "live-logs"
 
 # ---- API ----
@@ -542,6 +542,12 @@ def show_stats():
 
 
 if __name__ == "__main__":
+    # Gate 2: Independent NO_TRADE check — defense in depth
+    _no_trade = Path(__file__).parent / "NO_TRADE"
+    if _no_trade.exists():
+        print("⛔ NO_TRADE — refusing to place order (live-trader.py gate)")
+        sys.exit(1)
+
     parser = argparse.ArgumentParser(description="Polymarket Live Trader")
     parser.add_argument("--trade", nargs=3, metavar=("SIDE", "PRICE", "REASONING"))
     parser.add_argument("--size", type=float, default=MAX_POSITION_SIZE)

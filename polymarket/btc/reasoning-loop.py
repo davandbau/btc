@@ -15,7 +15,9 @@ import argparse
 import json
 import math
 import os
+import atexit
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -35,13 +37,29 @@ except Exception:
 
 BOT_DIR = Path(__file__).parent
 LEDGER_PATH = BOT_DIR / "ledgers" / "reasoning.json"
+_DEATH_LOG = BOT_DIR / "logs" / "death.log"
+
+def _log_death(reason):
+    """Log why the bot is exiting."""
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    with open(_DEATH_LOG, "a") as f:
+        f.write(f"[{ts}] {reason}\n")
+    print(f"\n⚠️ [{ts}] {reason}", flush=True)
+
+def _signal_handler(signum, frame):
+    _log_death(f"Received signal {signum} ({signal.Signals(signum).name})")
+    sys.exit(128 + signum)
+
+signal.signal(signal.SIGTERM, _signal_handler)
+signal.signal(signal.SIGHUP, _signal_handler)
+atexit.register(lambda: _log_death("atexit: clean Python exit"))
 GAMMA_BASE = "https://gamma-api.polymarket.com"
 CLOB_BASE = "https://clob.polymarket.com"
 CHAINLINK_FEED_ID = "0x00039d9e45394f473ab1f050a1b963e6b05351e52d71e507509ada0c95ed75b8"
 CHAINLINK_API = "https://data.chain.link/api/query-timescale"
 
-MAX_POSITION = 100.0  # Maximum trade size at 100% conviction
-MIN_EDGE = 0.07       # Minimum edge (conviction - market_price) to trade, accounts for fees
+MAX_POSITION = 116.0  # Maximum trade size at 100% conviction
+MIN_EDGE = 0.05       # Minimum edge (conviction - market_price) to trade, accounts for fees
 MIN_CONVICTION = 0.70  # Minimum conviction to trade (filters marginal setups)
 MAX_CONVICTION_RATIO = 1.8  # Max conviction / market_price ratio (sanity check)
 
@@ -143,6 +161,18 @@ def build_brief(cached_strike=None):
 
             brief["chainlink_current"] = round(cl_prices[0]["price"], 2)
 
+            # Get real-time Binance spot price for delta calculation
+            _binance_price = None
+            try:
+                _ticker = fetch_json("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT")
+                if _ticker and "price" in _ticker:
+                    _binance_price = float(_ticker["price"])
+                    brief["binance_spot"] = round(_binance_price, 2)
+            except Exception:
+                pass
+            # Use Binance for delta if available, fall back to Chainlink
+            _current_for_delta = _binance_price if _binance_price is not None else cl_prices[0]["price"]
+
             # Strike = cached from window start, or fallback to buffer search
             if cached_strike is not None:
                 best_strike = cached_strike
@@ -156,7 +186,7 @@ def build_brief(cached_strike=None):
                         best_strike = p["price"]
             if best_strike:
                 brief["strike"] = round(best_strike, 2)
-                brief["delta_from_strike"] = round(cl_prices[0]["price"] - best_strike, 2)
+                brief["delta_from_strike"] = round(_current_for_delta - best_strike, 2)
 
             # Price trajectory since window start
             window_prices = []
@@ -669,15 +699,8 @@ def build_brief(cached_strike=None):
         }
 
     # Previous window results
-    ledger_path = BOT_DIR / "ledgers" / "reasoning.json"
-    if ledger_path.exists():
-        ledger = json.loads(ledger_path.read_text())
-        recent = [t for t in ledger.get("trades", []) if t.get("outcome")][-3:]
-        if recent:
-            brief["recent_results"] = [
-                {"side": t["side"], "outcome": t["outcome"], "pnl": round(t["pnl"], 2), "timestamp": t.get("timestamp", "")}
-                for t in recent
-            ]
+    # Recent results removed — tilt guard handles streak risk mechanically.
+    # Feeding W/L data to the LLM invited pattern-matching on noise.
 
     # Write regime/trend data for dashboard
     try:
@@ -785,8 +808,8 @@ def trigger_agent(brief, tranche, prior_decisions, dry_run=False, live=False):
                 _start = time.time()
                 api_messages = [{"role": "user", "content": message}]
                 resp = _ANTHROPIC_CLIENT.messages.create(
-                    model="claude-sonnet-4-20250514",
-                    max_tokens=400,
+                    model="claude-sonnet-4-6",
+                    max_tokens=600,
                     messages=api_messages,
                 )
                 output = resp.content[0].text.strip()
@@ -795,9 +818,9 @@ def trigger_agent(brief, tranche, prior_decisions, dry_run=False, live=False):
 
                 # Store for post-decision logging
                 _llm_meta = {
-                    "model": "claude-sonnet-4-20250514",
+                    "model": "claude-sonnet-4-6",
                     "elapsed_s": round(_elapsed, 2),
-                    "request": {"messages": api_messages, "max_tokens": 400},
+                    "request": {"messages": api_messages, "max_tokens": 600},
                     "response": {
                         "output": output,
                         "usage": {"input_tokens": resp.usage.input_tokens, "output_tokens": resp.usage.output_tokens},
@@ -872,7 +895,7 @@ def trigger_agent(brief, tranche, prior_decisions, dry_run=False, live=False):
                         entry_price = pm.get("down_mid", pm.get("down_best_ask", pm.get("down_price", 0.5)))
                     # Sanity check: conviction can't be too far from market price
                     if entry_price > 0 and conv / entry_price > MAX_CONVICTION_RATIO:
-                        print(f"  [{ts}]    ⛔ SANITY CHECK: conviction {conviction}% is {conv/entry_price:.1f}× market price {entry_price:.2f} (max {MAX_CONVICTION_RATIO}×) — likely overconfident, skipping")
+                        print(f"  [{ts}]    ⊘ SANITY CHECK: conviction {conviction}% is {conv/entry_price:.1f}× market price {entry_price:.2f} (max {MAX_CONVICTION_RATIO}×) — likely overconfident, skipping")
                         decision["action"] = "PASS"
                         decision["reasoning"] = f"Sanity check: conviction {conv/entry_price:.1f}× market price"
                         log_pass(brief, decision["reasoning"], "sanity_check")
@@ -891,24 +914,29 @@ def trigger_agent(brief, tranche, prior_decisions, dry_run=False, live=False):
 
                         # Execute trade (paper or live)
                         if sized > 0:
-                            trade_cmd_exec = [
-                                trader_python, trader_script,
-                                "--trade", side, str(entry_price),
-                                f"T{tranche_id}/conv[{conviction}]: {reasoning[:80]}",
-                                "--size", str(sized),
-                                "--confidence", str(conviction),
-                                "--delta", str(compact.get('delta_from_strike', 0)),
-                                "--strike", str(compact.get('strike', 0)),
-                                "--momentum", str(compact.get('momentum_alignment', {}).get('score', 0) if isinstance(compact.get('momentum_alignment'), dict) else 0),
-                                "--brief-file", str(brief_file),
-                            ] + (["--live"] if live else [])
-                            try:
-                                trade_result = subprocess.run(trade_cmd_exec, capture_output=True, text=True, timeout=15)
-                                if trade_result.stdout:
-                                    for tl in trade_result.stdout.strip().split('\n')[-3:]:
-                                        print(f"  [{ts}]    {tl.strip()[:100]}")
-                            except Exception as te:
-                                print(f"  [{ts}] ⚠️  Trade execution error: {te}")
+                            # Gate 1: NO_TRADE blocks order placement
+                            if (BOT_DIR / "NO_TRADE").exists() and not dry_run:
+                                print(f"  [{ts}] 🔒 NO_TRADE: would {side} ${sized:.2f} @ {conviction}% conviction, edge={edge}, price={entry_price} — BLOCKED")
+                                decision["blocked"] = True
+                            else:
+                                trade_cmd_exec = [
+                                    trader_python, trader_script,
+                                    "--trade", side, str(entry_price),
+                                    f"T{tranche_id}/conv[{conviction}]: {reasoning[:80]}",
+                                    "--size", str(sized),
+                                    "--confidence", str(conviction),
+                                    "--delta", str(compact.get('delta_from_strike', 0)),
+                                    "--strike", str(compact.get('strike', 0)),
+                                    "--momentum", str(compact.get('momentum_alignment', {}).get('score', 0) if isinstance(compact.get('momentum_alignment'), dict) else 0),
+                                    "--brief-file", str(brief_file),
+                                ] + (["--live"] if live else [])
+                                try:
+                                    trade_result = subprocess.run(trade_cmd_exec, capture_output=True, text=True, timeout=15)
+                                    if trade_result.stdout:
+                                        for tl in trade_result.stdout.strip().split('\n')[-3:]:
+                                            print(f"  [{ts}]    {tl.strip()[:100]}")
+                                except Exception as te:
+                                    print(f"  [{ts}] ⚠️  Trade execution error: {te}")
             else:
                 # Fallback: try regex parsing for backwards compatibility
                 full = output.upper()
@@ -1032,32 +1060,52 @@ def get_observation_snapshot():
 
 
 def get_quick_delta(cached_strike=None):
-    """Fast delta check — just Chainlink price vs strike. No full brief.
-    If cached_strike is provided, use it instead of searching the buffer
-    (the buffer only holds ~60s and the actual window-start price scrolls out).
+    """Fast delta check — Binance spot price vs Chainlink strike.
+    Uses Binance for current price (real-time, no lag) and Chainlink only
+    for strike capture (authoritative for settlement).
     Returns (current_price, strike, delta) or (current, strike, delta, strike_offset_s)
     when doing initial capture (no cached_strike)."""
     now = time.time()
     current_window = int(now) // 300 * 300
+
+    # Get current price from Binance spot (real-time, no lag)
+    current = None
+    try:
+        ticker = fetch_json("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT")
+        if ticker and "price" in ticker:
+            current = round(float(ticker["price"]), 2)
+    except Exception:
+        pass
+
+    # Fallback to Chainlink if Binance fails
+    if current is None:
+        cl_url = f"{CHAINLINK_API}?query=LIVE_STREAM_REPORTS_QUERY&variables=%7B%22feedId%22%3A%22{CHAINLINK_FEED_ID}%22%7D"
+        cl_data = fetch_json(cl_url)
+        if not cl_data or "data" not in cl_data:
+            return None, None, None
+        nodes = cl_data["data"].get("liveStreamReports", {}).get("nodes", [])
+        if not nodes:
+            return None, None, None
+        current = round(float(nodes[0]["price"]) / 1e18, 2)
+
+    # Use cached strike if available (captured at window start via Chainlink)
+    if cached_strike is not None:
+        return current, round(cached_strike, 2), round(current - cached_strike, 2)
+
+    # Initial capture: still use Chainlink for strike (authoritative for settlement)
     cl_url = f"{CHAINLINK_API}?query=LIVE_STREAM_REPORTS_QUERY&variables=%7B%22feedId%22%3A%22{CHAINLINK_FEED_ID}%22%7D"
     cl_data = fetch_json(cl_url)
     if not cl_data or "data" not in cl_data:
-        return None, None, None
+        return current, None, None
     nodes = cl_data["data"].get("liveStreamReports", {}).get("nodes", [])
     if not nodes:
-        return None, None, None
+        return current, None, None
     prices = []
     for n in nodes[:60]:
         ts = datetime.fromisoformat(n["validFromTimestamp"].replace("Z", "+00:00")).timestamp()
         price = float(n["price"]) / 1e18
         prices.append({"ts": ts, "price": price})
-    current = prices[0]["price"]
 
-    # Use cached strike if available (captured at window start)
-    if cached_strike is not None:
-        return round(current, 2), round(cached_strike, 2), round(current - cached_strike, 2)
-
-    # Fallback: find closest to window start in buffer
     best_strike = None
     best_dist = float("inf")
     for p in prices:
@@ -1066,8 +1114,8 @@ def get_quick_delta(cached_strike=None):
             best_dist = d
             best_strike = p["price"]
     if best_strike:
-        return round(current, 2), round(best_strike, 2), round(current - best_strike, 2), round(best_dist, 1)
-    return round(current, 2), None, None
+        return current, round(best_strike, 2), round(current - best_strike, 2), round(best_dist, 1)
+    return current, None, None
 
 
 def run_loop(dry_run=False, live=False):
@@ -1185,9 +1233,9 @@ def run_loop(dry_run=False, live=False):
     # 8. NO_TRADE file
     no_trade = (BOT_DIR / "NO_TRADE").exists()
     if no_trade and not dry_run:
-        checks.append(("NO_TRADE", "⛔ active — trading blocked until unlocked"))
+        checks.append(("NO_TRADE", "⊘ active — trading blocked until unlocked"))
     elif no_trade and dry_run:
-        checks.append(("NO_TRADE", "⛔ active — bypassed in paper mode"))
+        checks.append(("NO_TRADE", "⊘ active — bypassed in paper mode"))
     else:
         checks.append(("NO_TRADE", "🔓 not set — trading allowed"))
 
@@ -1214,22 +1262,66 @@ def run_loop(dry_run=False, live=False):
 
             # Init window state
             if current_window not in window_state:
-                # Capture strike price NOW (within first seconds of window)
+                # Capture strike: poll Chainlink for up to 10s to find the first
+                # report AT or AFTER window start (matches Polymarket resolution)
                 _cached_strike = None
                 try:
-                    result = get_quick_delta()
-                    if len(result) == 4:
-                        _, _s, _, cl_offset = result
-                    else:
-                        _, _s, _ = result
-                        cl_offset = "?"
-                    _cached_strike = _s
+                    _strike_found = False
+                    time.sleep(8)  # Wait for CL buffer to populate with reports near window boundary
+                    for _attempt in range(10):
+                        cl_url = f"{CHAINLINK_API}?query=LIVE_STREAM_REPORTS_QUERY&variables=%7B%22feedId%22%3A%22{CHAINLINK_FEED_ID}%22%7D"
+                        cl_data = fetch_json(cl_url)
+                        if cl_data and "data" in cl_data:
+                            nodes = cl_data["data"].get("liveStreamReports", {}).get("nodes", [])
+                            # Find report closest to window start (before or after)
+                            best_node = None
+                            best_gap = float('inf')
+                            for n in nodes:
+                                report_ts = datetime.fromisoformat(n["validFromTimestamp"].replace("Z", "+00:00")).timestamp()
+                                gap = abs(report_ts - current_window)
+                                if gap < best_gap:
+                                    best_gap = gap
+                                    best_node = n
+                                    best_report_ts = report_ts
+                            if best_node and best_gap < 30:  # sanity: within 30s
+                                n = best_node
+                                report_ts = best_report_ts
+                                if True:
+                                    _cached_strike = round(float(n["price"]) / 1e18, 2)
+                                    cl_offset = round(report_ts - current_window, 1)
+                                    cl_side = "after" if cl_offset >= 0 else "before"
+                                    ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
+                                    # Cross-check: fetch PM displayed strike
+                                    _pm_strike_str = ""
+                                    try:
+                                        _pm_url = f"https://clob.polymarket.com/markets/btc-updown-5m-{int(current_window)}"
+                                        _pm_r = requests.get(_pm_url, timeout=5)
+                                        if _pm_r.ok:
+                                            _pm_data = _pm_r.json()
+                                            _pm_sp = _pm_data.get("strike_price") or _pm_data.get("strikePrice")
+                                            if _pm_sp:
+                                                _pm_strike_str = f" | PM strike: ${float(_pm_sp):,.2f} (diff: ${abs(_cached_strike - float(_pm_sp)):,.2f})"
+                                    except Exception:
+                                        pass
+                                    print(f"  [{ts}] 📌 Strike cached: ${_cached_strike:,.2f} (CL report {abs(cl_offset)}s {cl_side} window start, attempt {_attempt+1}){_pm_strike_str}")
+                                    _strike_found = True
+                                    break
+                        if _strike_found:
+                            break
+                        time.sleep(1)
+                    if not _strike_found:
+                        # Fallback: use closest available price
+                        result = get_quick_delta()
+                        if result and len(result) >= 3:
+                            _, _cached_strike, _ = result[:3]
+                            ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
+                            print(f"  [{ts}] ⚠️ Strike fallback (no post-window report found): ${_cached_strike:,.2f}")
+                except Exception as e:
                     ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
-                    print(f"  [{ts}] 📌 Strike cached: ${_s:,.2f} (captured at {elapsed:.0f}s into window, CL offset: {cl_offset}s)")
-                except:
-                    pass
+                    print(f"  [{ts}] ⚠️ Strike capture failed: {e}")
                 window_state[current_window] = {
                     "delta_samples": [],       # list of (elapsed, delta) tuples
+                    "ob_samples": [],          # list of (elapsed, ob_score) tuples
                     "last_sample": 0,          # timestamp of last sample
                     "entries": [],             # trades made this window
                     "entry_delta": None,       # delta at first entry
@@ -1239,6 +1331,7 @@ def run_loop(dry_run=False, live=False):
                     "decisions": [],
                     "done": False,             # no more entries possible
                     "cached_strike": _cached_strike,  # strike captured at window start
+                    "guard_blocks": set(),     # distinct guard types that fired this window
                 }
 
             state = window_state[current_window]
@@ -1260,28 +1353,36 @@ def run_loop(dry_run=False, live=False):
                     print(f"  [{ts}] Window {window_str} | {elapsed:.0f}s in, {remaining:.0f}s left")
                 last_status = now
 
-            # ---- NO_TRADE kill switch (skipped in dry-run/paper mode) ----
+            # ---- NO_TRADE observe mode announcement ----
             no_trade_file = BOT_DIR / "NO_TRADE"
             if no_trade_file.exists() and not dry_run:
                 if not state.get("no_trade_warned"):
                     ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
-                    print(f"  [{ts}] ⛔ NO_TRADE file present — all trading blocked")
+                    print(f"  [{ts}] ⊘ NO_TRADE active — running in observe mode (no orders will be placed)")
                     state["no_trade_warned"] = True
-                    state["done"] = True
-                # Skip monitoring entirely
             elif state.get("no_trade_warned"):
-                # NO_TRADE was just removed — announce trading is live
                 ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
                 print(f"\n  [{ts}] 🔓 NO_TRADE lifted — TRADING IS NOW LIVE\n")
                 state["no_trade_warned"] = False
-                state["done"] = False
             # ---- Monitoring Window Logic ----
-            elif not state["done"] and MONITOR_START <= elapsed <= MONITOR_END:
+            if not state["done"] and MONITOR_START <= elapsed <= MONITOR_END:
 
                 # Sample delta at intervals
                 if now - state["last_sample"] >= SAMPLE_INTERVAL:
                     state["last_sample"] = now
                     btc, strike, delta = get_quick_delta(cached_strike=state.get("cached_strike"))
+                    # Sample orderbook alongside delta
+                    try:
+                        _ob_data = fetch_json("https://api.binance.com/api/v3/depth?symbol=BTCUSDT&limit=20")
+                        if _ob_data and _ob_data.get("bids") and _ob_data.get("asks"):
+                            _mid = (float(_ob_data["bids"][0][0]) + float(_ob_data["asks"][0][0])) / 2
+                            _wb = sum(float(b[1]) / (1 + (_mid - float(b[0])) / 10) for b in _ob_data["bids"][:10])
+                            _wa = sum(float(a[1]) / (1 + (float(a[0]) - _mid) / 10) for a in _ob_data["asks"][:10])
+                            _tot = _wb + _wa
+                            if _tot > 0:
+                                state["ob_samples"].append((round(elapsed), round((_wb - _wa) / _tot, 3)))
+                    except Exception:
+                        pass
                     if delta is not None:
                         state["delta_samples"].append((round(elapsed), delta))
                         ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
@@ -1309,11 +1410,14 @@ def run_loop(dry_run=False, live=False):
                             last3 = [abs(d) for _, d in samples[-3:]]
                             growing = last3[-1] >= last3[-2] >= last3[-3]
 
-                        side_arrow = ('▲' if consistent_side == 'Up' else '▼') if consistent_side else '○'
-                        print(f"  [{ts}] Sample {n}: Δ={delta:+.1f} | "
-                              f"{'●' if consistent_side else '○'} {consistent_count}/{len(recent)} consistent "
-                              f"{side_arrow} "
-                              f"{'growing' if growing else 'fading'}")
+                        side_arrow = ('▲' if consistent_side == 'Up' else '▼') if consistent_side else ' '
+                        momentum_icon = '↑' if growing else '◐'
+                        dot = '●' if consistent_side else '○'
+                        ob_str = ""
+                        if state["ob_samples"]:
+                            _last_ob = state["ob_samples"][-1][1]
+                            ob_str = f" OB={_last_ob:+.2f}"
+                        print(f"  [{ts}] Sample {n}: {dot} {consistent_count}/{len(recent)} {side_arrow}{momentum_icon if consistent_side else '·'} Δ={delta:+.1f}{ob_str}")
 
                         # ---- Entry Decision ----
                         n_entries = len(state["entries"])
@@ -1338,6 +1442,19 @@ def run_loop(dry_run=False, live=False):
                             ts2 = datetime.now(timezone.utc).strftime("%H:%M:%S")
                             print(f"\n  [{ts2}] ► CONFIRMED ({attempt_label}): {consistent_side} ({consistent_count}/{len(recent)}) | Δ={delta:+.1f} | Building brief...")
                             brief = build_brief(cached_strike=state.get("cached_strike"))
+                            # Inject OB history into brief
+                            if state["ob_samples"]:
+                                obs = state["ob_samples"]
+                                ob_scores = [s for _, s in obs]
+                                brief["ob_history"] = {
+                                    "samples": len(obs),
+                                    "current": ob_scores[-1],
+                                    "mean": round(sum(ob_scores) / len(ob_scores), 3),
+                                    "min": min(ob_scores),
+                                    "max": max(ob_scores),
+                                    "trend": round(ob_scores[-1] - ob_scores[0], 3) if len(obs) > 1 else 0,
+                                    "last_5": ob_scores[-5:],
+                                }
                             state["agent_attempts"] = agent_attempts + 1
 
                             if "chainlink_current" not in brief or "polymarket" not in brief:
@@ -1353,59 +1470,84 @@ def run_loop(dry_run=False, live=False):
                                 print(f"  [{ts2}] ⚠️  Missing signals: {', '.join(missing)} — skipping")
                                 continue
 
-                            # Tilt guard: consecutive losses = step away
-                            # Respects tilt_reset_after watermark — losses before it are ignored
-                            recent = brief.get("recent_results", [])
-                            tilt_watermark = None
-                            try:
-                                _ledger = json.loads((BOT_DIR / "ledgers" / "reasoning.json").read_text())
-                                _wm = _ledger.get("tilt_reset_after")
-                                if _wm:
-                                    tilt_watermark = _wm
-                            except Exception:
-                                pass
-                            if tilt_watermark:
-                                recent = [r for r in recent if r.get("timestamp", "") > tilt_watermark]
-                            recent_losses = 0
-                            for r in reversed(recent):
-                                if r.get("outcome") == "loss":
-                                    recent_losses += 1
-                                else:
-                                    break
-                            if recent_losses >= 2:
-                                print(f"  [{ts2}] ⛔ Tilt guard: {recent_losses} consecutive losses — cooling off")
-                                log_pass(brief, f"Tilt: {recent_losses} consecutive losses", "tilt_guard")
+                            # Guard fatigue: if 3+ distinct guard types already fired this window, skip it
+                            if len(state["guard_blocks"]) >= 3:
+                                print(f"  [{ts2}] ⊘ Guard fatigue: {len(state['guard_blocks'])} distinct guards fired ({', '.join(sorted(state['guard_blocks']))}) — skipping window")
+                                log_pass(brief, f"Guard fatigue: {len(state['guard_blocks'])} distinct guards: {', '.join(sorted(state['guard_blocks']))}", "guard_fatigue")
+                                state["done"] = True
+                                break
+
+                            # Cheap entry + contra delta guard: don't bet against both market AND data
+                            _entry_price = brief.get("polymarket", {}).get("up_mid" if consistent_side == "Up" else "down_mid", 0.5)
+                            _delta = brief.get("delta_from_strike", 0)
+                            _contra_delta = (consistent_side == "Up" and _delta < 0) or (consistent_side == "Down" and _delta > 0)
+                            if _entry_price < 0.50 and _contra_delta:
+                                print(f"  [{ts2}] ⊘ Cheap entry + contra delta: {consistent_side} @ {_entry_price:.3f} with delta {_delta:+.1f} — skipping")
+                                log_pass(brief, f"Cheap contra: {consistent_side} entry={_entry_price:.3f} delta={_delta:+.1f}", "cheap_contra")
+                                state["guard_blocks"].add("cheap_contra")
                                 continue
+
+                            # Trajectory contradiction guard: price moving against intended direction
+                            _traj = brief.get("price_trajectory", [])
+                            if len(_traj) >= 6:
+                                _traj_prices = [p["p"] for p in _traj]
+                                _consec_decline = 0
+                                for _j in range(len(_traj_prices)-1, 0, -1):
+                                    if _traj_prices[_j] < _traj_prices[_j-1]:
+                                        _consec_decline += 1
+                                    else:
+                                        break
+                                _consec_rise = 0
+                                for _j in range(len(_traj_prices)-1, 0, -1):
+                                    if _traj_prices[_j] > _traj_prices[_j-1]:
+                                        _consec_rise += 1
+                                    else:
+                                        break
+                                if consistent_side == "Up" and _consec_decline >= 5:
+                                    print(f"  [{ts2}] ⊘ Trajectory contradiction: betting UP but {_consec_decline} consecutive declining samples — skipping")
+                                    log_pass(brief, f"Trajectory contradiction: UP with {_consec_decline} declining samples", "trajectory_contradiction")
+                                    state["guard_blocks"].add("trajectory")
+                                    continue
+                                elif consistent_side == "Down" and _consec_rise >= 5:
+                                    print(f"  [{ts2}] ⊘ Trajectory contradiction: betting DOWN but {_consec_rise} consecutive rising samples — skipping")
+                                    log_pass(brief, f"Trajectory contradiction: DOWN with {_consec_rise} rising samples", "trajectory_contradiction")
+                                    state["guard_blocks"].add("trajectory")
+                                    continue
 
                             # Orderbook contradiction guard: extreme OB imbalance opposing trade direction
                             ob_imb = brief.get("orderbook_imbalance", {})
                             ob_score = ob_imb.get("score", 0)
-                            if consistent_side == "Up" and ob_score < -0.8:
-                                print(f"  [{ts2}] ⛔ Orderbook contradiction: betting UP but OB score {ob_score:.2f} (strong sell) — skipping")
+                            if consistent_side == "Up" and ob_score < -0.6:
+                                print(f"  [{ts2}] ⊘ Orderbook contradiction: betting UP but OB score {ob_score:.2f} (strong sell) — skipping")
                                 log_pass(brief, f"OB contradiction: UP vs OB score {ob_score:.2f}", "ob_contradiction")
+                                state["guard_blocks"].add("ob_contradiction")
                                 continue
-                            elif consistent_side == "Down" and ob_score > 0.8:
-                                print(f"  [{ts2}] ⛔ Orderbook contradiction: betting DOWN but OB score {ob_score:.2f} (strong buy) — skipping")
+                            elif consistent_side == "Down" and ob_score > 0.6:
+                                print(f"  [{ts2}] ⊘ Orderbook contradiction: betting DOWN but OB score {ob_score:.2f} (strong buy) — skipping")
                                 log_pass(brief, f"OB contradiction: DOWN vs OB score {ob_score:.2f}", "ob_contradiction")
+                                state["guard_blocks"].add("ob_contradiction")
                                 continue
 
                             # ADX floor guard: no trend = no trade
                             adx = ta.get("adx", 0)
                             if adx is not None and adx < 20:
-                                print(f"  [{ts2}] ⛔ No trend: ADX {adx:.1f} < 20 — skipping")
+                                print(f"  [{ts2}] ⊘ No trend: ADX {adx:.1f} < 20 — skipping")
                                 log_pass(brief, f"ADX too low: {adx:.1f} < 20", "adx_floor")
+                                state["guard_blocks"].add("adx_floor")
                                 continue
 
                             # RSI extreme guard: don't bet into exhausted moves
                             rsi = ta.get("rsi_6", 50)
                             if rsi is not None:
                                 if consistent_side == "Up" and rsi > 85:
-                                    print(f"  [{ts2}] ⛔ RSI extreme: betting UP but RSI {rsi:.1f} (overbought) — skipping")
+                                    print(f"  [{ts2}] ⊘ RSI extreme: betting UP but RSI {rsi:.1f} (overbought) — skipping")
                                     log_pass(brief, f"RSI extreme: UP with RSI {rsi:.1f}", "rsi_extreme")
+                                    state["guard_blocks"].add("rsi_extreme")
                                     continue
                                 elif consistent_side == "Down" and rsi < 15:
-                                    print(f"  [{ts2}] ⛔ RSI extreme: betting DOWN but RSI {rsi:.1f} (oversold) — skipping")
+                                    print(f"  [{ts2}] ⊘ RSI extreme: betting DOWN but RSI {rsi:.1f} (oversold) — skipping")
                                     log_pass(brief, f"RSI extreme: DOWN with RSI {rsi:.1f}", "rsi_extreme")
+                                    state["guard_blocks"].add("rsi_extreme")
                                     continue
 
                             # Exhaustion guard: triple extreme = move is spent
@@ -1413,12 +1555,14 @@ def run_loop(dry_run=False, live=False):
                             bb = ta.get("bb_position", 50)
                             if hurst is not None and rsi is not None and bb is not None:
                                 if consistent_side == "Down" and hurst < 0.3 and rsi < 20 and bb < 10:
-                                    print(f"  [{ts2}] ⛔ Exhaustion: DOWN but Hurst={hurst:.2f}, RSI={rsi:.1f}, BB={bb:.1f}% — oversold bounce likely")
+                                    print(f"  [{ts2}] ⊘ Exhaustion: DOWN but Hurst={hurst:.2f}, RSI={rsi:.1f}, BB={bb:.1f}% — oversold bounce likely")
                                     log_pass(brief, f"Exhaustion: Hurst={hurst:.2f} RSI={rsi:.1f} BB={bb:.1f}%", "exhaustion")
+                                    state["guard_blocks"].add("exhaustion")
                                     continue
                                 elif consistent_side == "Up" and hurst < 0.3 and rsi > 80 and bb > 90:
-                                    print(f"  [{ts2}] ⛔ Exhaustion: UP but Hurst={hurst:.2f}, RSI={rsi:.1f}, BB={bb:.1f}% — overbought pullback likely")
+                                    print(f"  [{ts2}] ⊘ Exhaustion: UP but Hurst={hurst:.2f}, RSI={rsi:.1f}, BB={bb:.1f}% — overbought pullback likely")
                                     log_pass(brief, f"Exhaustion: Hurst={hurst:.2f} RSI={rsi:.1f} BB={bb:.1f}%", "exhaustion")
+                                    state["guard_blocks"].add("exhaustion")
                                     continue
 
                             # Check entry price
@@ -1428,10 +1572,11 @@ def run_loop(dry_run=False, live=False):
                             else:
                                 entry_price = pm.get("down_mid", pm.get("down_best_ask", pm.get("down_price", 0.5)))
 
-                            # Pre-agent price gate: if entry > 0.78, even max realistic conviction (85%) gives <7% edge
-                            if entry_price > 0.78:
-                                print(f"  [{ts2}] ⛔ Price gate: {consistent_side} entry {entry_price:.2f} > 0.78 — market already priced in, skipping agent")
-                                log_pass(brief, f"Price gate: entry {entry_price:.2f} > 0.78", "price_gate")
+                            # Pre-agent price gate: if entry > 0.88, market is heavily priced in
+                            if entry_price > 0.92:
+                                print(f"  [{ts2}] ⊘ Price gate: {consistent_side} entry {entry_price:.2f} > 0.92 — market already priced in, skipping agent")
+                                log_pass(brief, f"Price gate: entry {entry_price:.2f} > 0.92", "price_gate")
+                                state["guard_blocks"].add("price_gate")
                                 continue
 
                             # Trigger agent
@@ -1440,12 +1585,15 @@ def run_loop(dry_run=False, live=False):
                             state["decisions"].append(decision)
 
                             if decision.get("action", "").startswith("BUY") and decision.get("size", 0) > 0:
+                                decision["guard_blocks_before_entry"] = sorted(state["guard_blocks"])
                                 state["entries"].append(decision)
                                 state["entry_delta"] = delta
                                 state["entry_side"] = consistent_side
                                 state["combined_cost"] += decision.get("cost", 0)
                                 entry_arrow = '▲' if consistent_side == 'Up' else '▼'
-                                print(f"  [{ts2}] {entry_arrow} Entry 1: {consistent_side} | Δ={delta:+.1f}")
+                                gb = state["guard_blocks"]
+                                gb_str = f" (guards: {','.join(sorted(gb))})" if gb else ""
+                                print(f"  [{ts2}] {entry_arrow} Entry 1: {consistent_side} | Δ={delta:+.1f}{gb_str}")
                             elif decision.get("action", "").startswith("BUY") and decision.get("size", 0) == 0:
                                 print(f"  [{ts2}]    ⏭️  Edge too low, no entry (Kelly=$0)")
                                 log_pass(brief, f"Kelly sized $0 — edge insufficient", "kelly_reject")
@@ -1607,4 +1755,14 @@ if __name__ == "__main__":
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--live", action="store_true", help="Execute real trades via live-trader.py")
     args = parser.parse_args()
-    run_loop(dry_run=args.dry_run, live=args.live)
+    try:
+        run_loop(dry_run=args.dry_run, live=args.live)
+    except Exception as e:
+        import traceback
+        ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
+        print(f"\n  [{ts}] 💀 FATAL: {e}", flush=True)
+        traceback.print_exc()
+        sys.exit(1)
+    finally:
+        ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
+        print(f"\n  [{ts}] ⚡ Process exiting (run_loop returned)", flush=True)

@@ -10,18 +10,24 @@ POLY_DIR = os.path.dirname(DIR)  # parent: polymarket/
 ASSET_DIRS = {
     "btc": os.path.join(POLY_DIR, "btc"),
     "eth": os.path.join(POLY_DIR, "eth"),
+    "sol": os.path.join(POLY_DIR, "sol"),
+    "xrp": os.path.join(POLY_DIR, "xrp"),
 }
 
 # Chainlink feed IDs per asset
 CHAINLINK_FEEDS = {
     "btc": "0x00039d9e45394f473ab1f050a1b963e6b05351e52d71e507509ada0c95ed75b8",
     "eth": "0x000359843a543ee2fe414dc14c7e7920ef10f4372990b79d6361cdc0dd1ba782",
+    "sol": "0x0003b778d3f6b2ac4991302b89cb313f99a42467d6c9c5f96f57c29c0d2bc24f",
+    "xrp": "0x0003c16c6aed42294f5cb4741f6e59ba2d728f0eae2eb9e6d3f555808c59fc45",
 }
 CHAINLINK_API = "https://data.chain.link/api/query-timescale"
 
 # Cached Chainlink data per asset
 _chainlink_cache = {
     "btc": {"data": None, "raw": b'{"error":"no data yet"}'},
+    "sol": {"data": None, "raw": b'{"error":"no data yet"}'},
+    "xrp": {"data": None, "raw": b'{"error":"no data yet"}'},
     "eth": {"data": None, "raw": b'{"error":"no data yet"}'},
 }
 
@@ -130,6 +136,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             return
         base = self.path.split('?')[0]
+        if base == '/api/time':
+            import time as _t
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(json.dumps({"ts": int(_t.time() * 1000)}).encode())
+            return
         if base == '/api/chainlink':
             self.proxy_chainlink()
         elif base == '/api/pm-price':

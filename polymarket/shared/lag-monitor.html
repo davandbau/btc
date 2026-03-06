@@ -16,6 +16,12 @@
   .prices { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; margin-bottom: 16px; }
   .panel { background: #1e2428; border: 1px solid #242b32; border-radius: 8px; padding: 12px 16px; }
   .panel-label { font-size: 14px; color: #7b8996; letter-spacing: 0.3px; margin-bottom: 8px; }
+  .skeleton { display: inline-block; background: linear-gradient(90deg, #242b32 25%, #2d353d 50%, #242b32 75%); background-size: 200% 100%; animation: shimmer 1.5s infinite; border-radius: 4px; }
+  @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+  .skel-price { width: 140px; height: 28px; }
+  .skel-sm { width: 60px; height: 18px; }
+  .skel-md { width: 90px; height: 18px; }
+  .skel-ex { width: 100px; height: 20px; }
   .price { font-size: 32px; font-weight: 500; letter-spacing: -0.3px; }
   .sub { font-size: 16px; color: #7b8996; margin-top: 4px; }
   .binance .price { color: #f0b90b; }
@@ -57,7 +63,7 @@
   .tip-wrap::after { content: attr(data-tip); position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%); background: #242b32; color: #dee3e7; font-size: 13px; line-height: 1.5; padding: 10px 14px; border-radius: 8px; border: 1px solid #3a4450; white-space: normal; width: 240px; pointer-events: none; opacity: 0; transition: opacity 0.15s ease; z-index: 10; box-shadow: 0 4px 12px rgba(0,0,0,0.4); font-weight: 400; letter-spacing: 0; }
   .tip-wrap::before { content: ''; position: absolute; bottom: calc(100% + 2px); left: 50%; transform: translateX(-50%); border: 6px solid transparent; border-top-color: #242b32; pointer-events: none; opacity: 0; transition: opacity 0.15s ease; z-index: 10; }
   .tip-wrap:hover::after, .tip-wrap:hover::before { opacity: 1; }
-  .trend-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  .trend-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
   .status span { font-size: 14px; color: #888; }
 
   /* Tab bar */
@@ -100,21 +106,18 @@
 </head>
 <body>
 <div class="container">
-  <div class="tab-bar">
-    <button class="tab active" data-asset="btc" onclick="switchAsset('btc')">BTC</button>
-    <button class="tab" data-asset="eth" onclick="switchAsset('eth')">ETH</button>
-  </div>
+  <!-- Tab bar hidden — BTC only for now -->
   <h1 id="dash-title">BTC Arbitrage Intelligence<span class="subtitle" id="dash-subtitle">Exchanges vs Chainlink vs Polymarket</span></h1>
 
   <div class="prices" style="grid-template-columns: 1fr 1fr;">
     <div class="panel binance">
       <div class="panel-label"><span class="dot" id="bin-dot"></span> Binance BTC Spot</div>
-      <div class="price" id="bin-price">—</div>
+      <div class="price" id="bin-price"><span class="skeleton skel-price"></span></div>
       <div class="sub" id="bin-sub">connecting...</div>
     </div>
     <div class="panel chainlink">
       <div class="panel-label"><span class="dot on" id="pm-dot"></span> Chainlink BTC/USD</div>
-      <div class="price" id="cl-price">—</div>
+      <div class="price" id="cl-price"><span class="skeleton skel-price"></span></div>
       <div class="sub" id="cl-sub">loading...</div>
     </div>
   </div>
@@ -122,22 +125,22 @@
   <div class="exchanges">
     <div class="ex">
       <div class="ex-name"><span class="dot" id="cb-dot"></span> Coinbase</div>
-      <div class="ex-price" id="cb-price">—</div>
+      <div class="ex-price" id="cb-price"><span class="skeleton skel-ex"></span></div>
       <div class="ex-lag" id="cb-lag"></div>
     </div>
     <div class="ex">
       <div class="ex-name"><span class="dot" id="kr-dot"></span> Kraken</div>
-      <div class="ex-price" id="kr-price">—</div>
+      <div class="ex-price" id="kr-price"><span class="skeleton skel-ex"></span></div>
       <div class="ex-lag" id="kr-lag"></div>
     </div>
     <div class="ex">
       <div class="ex-name"><span class="dot" id="ok-dot"></span> OKX</div>
-      <div class="ex-price" id="ok-price">—</div>
+      <div class="ex-price" id="ok-price"><span class="skeleton skel-ex"></span></div>
       <div class="ex-lag" id="ok-lag"></div>
     </div>
     <div class="ex">
       <div class="ex-name"><span class="dot" id="bb-dot"></span> Bybit</div>
-      <div class="ex-price" id="bb-price">—</div>
+      <div class="ex-price" id="bb-price"><span class="skeleton skel-ex"></span></div>
       <div class="ex-lag" id="bb-lag"></div>
     </div>
   </div>
@@ -145,39 +148,57 @@
   <div class="lag-bar">
     <div class="lag-label">Exchange Average → Polymarket / Chainlink Lag</div>
     <div>
-      <span class="lag-value" id="lag-value">—</span>
+      <span class="lag-value" id="lag-value"><span class="skeleton skel-sm"></span></span>
       <span class="lag-unit" id="lag-unit"></span>
     </div>
     <div class="lag-desc" id="lag-desc">waiting for both feeds</div>
+  </div>
+
+  <!-- Bot Activity Feed -->
+  <div class="lag-bar" style="text-align:left; padding:20px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+      <div class="lag-label" style="margin-bottom:0;"><span class="tip-wrap" data-tip="Live tail of the reasoning bot log. Shows delta samples, trade decisions, passes, and win/loss results in real-time.">Bot Activity</span></div>
+      <div style="display:flex; gap:12px; font-size:12px;">
+        <span id="window-countdown" style="color:#586879; font-variant-numeric:tabular-nums;">—</span>
+        <span id="bot-status" style="color:#586879;">—</span>
+        <span id="bot-pnl" style="color:#586879;">—</span>
+      </div>
+    </div>
+    <div id="bot-feed" style="font-size:12px; color:#7b8996; max-height:280px; overflow-y:auto; line-height:1.8; border-top:1px solid #242b32; padding:12px 0 8px 0;"></div>
   </div>
 
   <!-- Trend Insights -->
   <div style="margin-bottom:16px;">
     <div class="lag-label" style="margin-bottom:10px; padding:0 4px;">Trend Insights</div>
     <div class="trend-grid">
-      <div class="panel" style="grid-column: span 2;">
+      <div class="panel">
         <div class="panel-label"><span class="tip-wrap" data-tip="Hurst exponent. Below 0.45 = choppy. Above 0.55 = trending.">Regime</span></div>
-        <div style="font-size:18px;font-weight:500;" id="regime-label">—</div>
+        <div style="font-size:18px;font-weight:500;" id="regime-label"><span class="skeleton skel-md"></span></div>
         <div style="font-size:12px;color:#586879;margin-top:2px;" id="regime-hurst">Hurst: —</div>
       </div>
       <div class="panel">
         <div class="panel-label"><span class="tip-wrap" data-tip="Average Directional Index. Above 25 = strong trend. Below 20 = ranging.">ADX</span></div>
-        <div style="font-size:18px;font-weight:500;" id="regime-adx">—</div>
+        <div style="font-size:18px;font-weight:500;" id="regime-adx"><span class="skeleton skel-sm"></span></div>
         <div style="font-size:12px;color:#586879;margin-top:2px;" id="regime-di">DI+/DI-: —</div>
       </div>
       <div class="panel">
         <div class="panel-label"><span class="tip-wrap" data-tip="Choppiness Index. Above 61.8 = choppy. Below 38.2 = trending.">Choppiness</span></div>
-        <div style="font-size:18px;font-weight:500;" id="regime-chop">—</div>
+        <div style="font-size:18px;font-weight:500;" id="regime-chop"><span class="skeleton skel-sm"></span></div>
         <div style="font-size:12px;color:#586879;margin-top:2px;" id="regime-chop-signal">—</div>
       </div>
       <div class="panel">
         <div class="panel-label"><span class="tip-wrap" data-tip="Current ATR vs average. Above 1.2x = expanding. Below 0.8x = contracting.">ATR Ratio</span></div>
-        <div style="font-size:18px;font-weight:500;" id="regime-atr">—</div>
+        <div style="font-size:18px;font-weight:500;" id="regime-atr"><span class="skeleton skel-sm"></span></div>
         <div style="font-size:12px;color:#586879;margin-top:2px;" id="regime-atr-signal">—</div>
       </div>
       <div class="panel">
+        <div class="panel-label"><span class="tip-wrap" data-tip="6-period RSI. Overbought >70, oversold <30.">RSI(6)</span></div>
+        <div style="font-size:18px;font-weight:500;" id="regime-rsi"><span class="skeleton skel-sm"></span></div>
+        <div style="font-size:12px;color:#586879;margin-top:2px;" id="regime-rsi-signal">—</div>
+      </div>
+      <div class="panel">
         <div class="panel-label"><span class="tip-wrap" data-tip="Composite score across all indicators.">Verdict</span></div>
-        <div style="font-size:18px;font-weight:600;" id="regime-verdict">—</div>
+        <div style="font-size:18px;font-weight:600;" id="regime-verdict"><span class="skeleton skel-md"></span></div>
         <div style="font-size:12px;color:#586879;margin-top:2px;" id="regime-direction">—</div>
       </div>
     </div>
@@ -186,26 +207,14 @@
   <div class="prices" style="grid-template-columns: 1fr 1fr; margin-bottom:16px;">
     <div class="panel" style="border-color:#f0b90b33; min-height:150px;">
       <div class="panel-label"><span class="dot" id="fut-dot"></span> <span id="fut-label">Binance BTC Perp (futures)</span></div>
-      <div class="price" id="fut-price" style="color:#f0b90b;">—</div>
+      <div class="price" id="fut-price" style="color:#f0b90b;"><span class="skeleton skel-price"></span></div>
       <div class="sub" id="fut-sub">connecting...</div>
     </div>
     <div class="panel" id="spread-panel" style="min-height:150px;">
       <div class="panel-label">Futures → Spot Spread</div>
-      <div class="price" id="fut-spread" style="font-size:32px;">—</div>
+      <div class="price" id="fut-spread" style="font-size:32px;"><span class="skeleton skel-md"></span></div>
       <div class="sub" id="spread-direction" style="line-height:1.6;">waiting for both feeds</div>
     </div>
-  </div>
-
-  <!-- Bot Activity Feed -->
-  <div class="lag-bar" style="text-align:left; padding:20px;">
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
-      <div class="lag-label" style="margin-bottom:0;"><span class="tip-wrap" data-tip="Live tail of the reasoning bot log. Shows delta samples, trade decisions, passes, and win/loss results in real-time.">Bot Activity</span></div>
-      <div style="display:flex; gap:12px; font-size:12px;">
-        <span id="bot-status" style="color:#586879;">—</span>
-        <span id="bot-pnl" style="color:#586879;">—</span>
-      </div>
-    </div>
-    <div id="bot-feed" style="font-size:12px; color:#7b8996; max-height:280px; overflow-y:auto; line-height:1.8; border-top:1px solid #242b32; padding:12px 0 8px 0;"></div>
   </div>
 
   <!-- Liquidations (hidden, data still collected) -->
@@ -222,7 +231,7 @@
       </div>
       <div>
         <div style="font-size:10px;color:#7b8996;margin-bottom:4px;">Net Pressure</div>
-        <div style="font-size:22px;font-weight:500;" id="liq-net">—</div>
+        <div style="font-size:22px;font-weight:500;" id="liq-net"><span class="skeleton skel-sm"></span></div>
       </div>
       <div>
         <div style="font-size:10px;color:#7b8996;margin-bottom:4px;">Funding Rate</div>
@@ -249,6 +258,18 @@ const ASSETS = {
     futSymbol: 'ethusdt', color: '#627eea', icon: 'Ξ',
     feedId: '0x000359843a543ee2fe414dc14c7e7920ef10f4372990b79d6361cdc0dd1ba782',
   },
+  sol: {
+    label: 'SOL', name: 'Solana', symbol: 'SOLUSDT', pair: 'SOL-USD', pairOKX: 'SOL-USDT',
+    tickerBybit: 'tickers.SOLUSDT', liqBybit: 'allLiquidation.SOLUSDT',
+    futSymbol: 'solusdt', color: '#9945ff', icon: '◎',
+    feedId: '0x0003b778d3f6b2ac4991302b89cb313f99a42467d6c9c5f96f57c29c0d2bc24f',
+  },
+  xrp: {
+    label: 'XRP', name: 'XRP', symbol: 'XRPUSDT', pair: 'XRP-USD', pairOKX: 'XRP-USDT',
+    tickerBybit: 'tickers.XRPUSDT', liqBybit: 'allLiquidation.XRPUSDT',
+    futSymbol: 'xrpusdt', color: '#a8b8c8', icon: '✕',
+    feedId: '0x0003c16c6aed42294f5cb4741f6e59ba2d728f0eae2eb9e6d3f555808c59fc45',
+  },
 };
 
 let currentAsset = 'btc';
@@ -274,8 +295,8 @@ function lagStr(ref, price) {
 function cfg() { return ASSETS[currentAsset]; }
 
 // ─── Asset Switching ───
-function switchAsset(asset) {
-  if (asset === currentAsset) return;
+function switchAsset(asset, force) {
+  if (asset === currentAsset && !force) return;
   currentAsset = asset;
   window.location.hash = asset;
 
@@ -301,12 +322,13 @@ function switchAsset(asset) {
   lastFeedKey='';
 
   // Reset displays
-  ['bin-price','cl-price','fut-price','cb-price','kr-price','ok-price','bb-price'].forEach(id=>{const e=$(id);if(e)e.textContent='—';});
+  ['bin-price','cl-price','fut-price'].forEach(id=>{const e=$(id);if(e)e.innerHTML='<span class="skeleton skel-price"></span>';});
+  ['cb-price','kr-price','ok-price','bb-price'].forEach(id=>{const e=$(id);if(e)e.innerHTML='<span class="skeleton skel-ex"></span>';});
   ['bin-sub','cl-sub','fut-sub'].forEach(id=>{const e=$(id);if(e)e.textContent='connecting...';});
   ['cb-lag','kr-lag','ok-lag','bb-lag'].forEach(id=>{const e=$(id);if(e)e.textContent='';});
   const bf=$('bot-feed');if(bf)bf.innerHTML='';
-  $('bot-status').textContent='—';
-  $('bot-pnl').textContent='—';
+  $('bot-status').innerHTML='<span class="skeleton skel-sm"></span>';
+  $('bot-pnl').innerHTML='<span class="skeleton skel-sm"></span>';
 
   // Close all websockets and reconnect
   closeAllSockets();
@@ -615,9 +637,41 @@ function startAllConnections(){
   addInterval(pollTokens,5000);
   addInterval(pollFunding,30000);
   addInterval(pollBotFeed,2000);
+  addInterval(pollRegime,5000);
   pollLiveState();
   bootstrapCandles();
   pollBotFeed();
+  pollRegime();
+  addInterval(updateWindowCountdown, 1000);
+  updateWindowCountdown();
+}
+
+let _serverTimeOffset = 0; // ms to add to Date.now() to match server
+async function syncServerTime() {
+  try {
+    const t0 = Date.now();
+    const r = await fetch('/api/time');
+    const d = await r.json();
+    const rtt = Date.now() - t0;
+    if (d.ts) _serverTimeOffset = d.ts - (t0 + rtt / 2);
+  } catch(e) {}
+}
+syncServerTime(); setInterval(syncServerTime, 60000);
+
+function updateWindowCountdown() {
+  const el = $('window-countdown');
+  if (!el) return;
+  const now = Date.now() + _serverTimeOffset;
+  const ms = 5 * 60 * 1000;
+  const windowStart = Math.floor(now / ms) * ms;
+  const windowEnd = windowStart + ms;
+  const remaining = Math.max(0, Math.ceil((windowEnd - now) / 1000));
+  const min = Math.floor(remaining / 60);
+  const sec = remaining % 60;
+  const phase = remaining > 120 ? 'TRADE' : 'OBSERVE';
+  const color = remaining > 180 ? '#3db468' : '#586879';
+  el.textContent = `${phase} ${min}:${String(sec).padStart(2, '0')}`;
+  el.style.color = color;
 }
 
 async function pollLiveState(){
@@ -825,12 +879,79 @@ function computeTrend(){
     dirLabel='No clear direction';
   }
 
+  // RSI(6)
+  let rsi6=null;
+  if(n>=7){
+    const period=6;
+    let avgGain=0,avgLoss=0;
+    for(let i=1;i<=period;i++){
+      const diff=closes[i]-closes[i-1];
+      if(diff>0) avgGain+=diff; else avgLoss+=Math.abs(diff);
+    }
+    avgGain/=period; avgLoss/=period;
+    for(let i=period+1;i<n;i++){
+      const diff=closes[i]-closes[i-1];
+      avgGain=(avgGain*(period-1)+(diff>0?diff:0))/period;
+      avgLoss=(avgLoss*(period-1)+(diff<0?Math.abs(diff):0))/period;
+    }
+    rsi6=avgLoss===0?100:100-100/(1+avgGain/avgLoss);
+  }
+  $('regime-rsi').textContent=rsi6!=null?rsi6.toFixed(1):'—';
+  $('regime-rsi').style.color=rsi6>70?'#ef4444':rsi6<30?'#3db468':'#dee3e7';
+  $('regime-rsi-signal').textContent=rsi6==null?'—':rsi6>85?'Extreme OB':rsi6>70?'Overbought':rsi6<15?'Extreme OS':rsi6<30?'Oversold':'Neutral';
+
   $('regime-verdict').textContent=verdict;
   $('regime-verdict').style.color=verdictColor;
   $('regime-direction').textContent=dirLabel;
   $('regime-direction').style.color=dirColor;
 }
 // Bot activity feed
+// Poll bot's regime data — overwrites client-side ADX/chop/ATR with bot's actual values
+let _regimeTs='';
+async function pollRegime(){
+  try{
+    const r=await fetch(`/api/regime?asset=${currentAsset}`);
+    if(!r.ok) return;
+    const d=await r.json();
+    if(!d.timestamp || d.timestamp===_regimeTs) return;
+    _regimeTs=d.timestamp;
+    // Only apply if data is fresh (< 5 min old)
+    const age=(Date.now()-new Date(d.timestamp).getTime())/1000;
+    if(age>300) return;
+    if(d.adx!=null){
+      $('regime-adx').textContent=d.adx.toFixed(1);
+      $('regime-adx').style.color=d.adx>25?'#3db468':d.adx>20?'#f0b90b':'#ef4444';
+    }
+    if(d.di_plus!=null&&d.di_minus!=null){
+      $('regime-di').textContent=`DI+ ${d.di_plus.toFixed(0)} / DI- ${d.di_minus.toFixed(0)}`;
+    }
+    if(d.atr_ratio!=null){
+      $('regime-atr').textContent=d.atr_ratio.toFixed(2)+'x';
+      $('regime-atr').style.color=d.atr_ratio>1.2?'#3db468':d.atr_ratio<0.8?'#ef4444':'#dee3e7';
+      $('regime-atr-signal').textContent=d.atr_signal||'—';
+    }
+    if(d.choppiness!=null){
+      $('regime-chop').textContent=d.choppiness.toFixed(1);
+      $('regime-chop').style.color=d.choppiness>61.8?'#ef4444':d.choppiness<38.2?'#3db468':'#f0b90b';
+      $('regime-chop-signal').textContent=d.chop_signal||'—';
+    }
+    if(d.hurst!=null){
+      const hr=d.hurst<0.45?'mean_reverting':d.hurst>0.55?'trending':'random_walk';
+      const rl={'mean_reverting':'Ranging','trending':'Trending','random_walk':'Random Walk'};
+      const rc={'mean_reverting':'#ef4444','trending':'#3db468','random_walk':'#f0b90b'};
+      $('regime-label').textContent=rl[hr]||'—';
+      $('regime-label').style.color=rc[hr]||'#dee3e7';
+      $('regime-hurst').textContent=`Hurst: ${d.hurst.toFixed(3)}`;
+    }
+    if(d.rsi_6!=null){
+      const rsi=d.rsi_6;
+      $('regime-rsi').textContent=rsi.toFixed(1);
+      $('regime-rsi').style.color=rsi>70?'#ef4444':rsi<30?'#3db468':'#dee3e7';
+      $('regime-rsi-signal').textContent=rsi>85?'Extreme OB':rsi>70?'Overbought':rsi<15?'Extreme OS':rsi<30?'Oversold':'Neutral';
+    }
+  }catch(ex){}
+}
+
 let lastFeedKey='';
 async function pollBotFeed(){
   try{
@@ -895,7 +1016,11 @@ if (hashAsset && ASSETS[hashAsset]) {
   const initA = cfg();
   $('dash-title').innerHTML = `${initA.label} Arbitrage Intelligence<span class="subtitle" id="dash-subtitle">Exchanges vs Chainlink vs Polymarket</span>`;
 }
-startAllConnections();
+switchAsset(currentAsset, true);
+
+// Reconnect on Safari bfcache restore or visibility change
+window.addEventListener('pageshow', (e) => { if (e.persisted) { closeAllSockets(); startAllConnections(); } });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { closeAllSockets(); startAllConnections(); } });
 </script>
 </body>
 </html>

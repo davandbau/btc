@@ -21,7 +21,7 @@ from pathlib import Path
 from urllib.request import urlopen, Request
 
 BOT_DIR = Path(__file__).parent
-LEDGER_PATH = BOT_DIR / "ledgers" / "eth.json"
+LEDGER_PATH = BOT_DIR / "ledgers" / "reasoning.json"
 GAMMA_BASE = "https://gamma-api.polymarket.com"
 CLOB_BASE = "https://clob.polymarket.com"
 CHAINLINK_FEED_ID = "0x000359843a543ee2fe414dc14c7e7920ef10f4372990b79d6361cdc0dd1ba782"
@@ -436,6 +436,12 @@ def show_stats():
 
 
 if __name__ == "__main__":
+    # Gate 2: Independent NO_TRADE check — defense in depth
+    _no_trade = Path(__file__).parent / "NO_TRADE"
+    if _no_trade.exists():
+        print("⛔ NO_TRADE — refusing to place order (reasoning-trader.py gate)")
+        sys.exit(1)
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--brief", action="store_true")
     parser.add_argument("--trade", nargs=3, metavar=("SIDE", "PRICE", "REASONING"))

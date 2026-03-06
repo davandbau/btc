@@ -436,6 +436,12 @@ def show_stats():
 
 
 if __name__ == "__main__":
+    # Gate 2: Independent NO_TRADE check — defense in depth
+    _no_trade = Path(__file__).parent / "NO_TRADE"
+    if _no_trade.exists():
+        print("⛔ NO_TRADE — refusing to place order (reasoning-trader.py gate)")
+        sys.exit(1)
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--brief", action="store_true")
     parser.add_argument("--trade", nargs=3, metavar=("SIDE", "PRICE", "REASONING"))
